@@ -1433,7 +1433,7 @@ void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
   calc_relocs(gv,sections[0]);
   calc_relocs(gv,sections[1]);
 
-  aout_header(f,ZMAGIC,mid,isPIC(sections) ? EX_PIC : 0, /* @@@ DYNAMIC? */
+  aout_header(f,OMAGIC,mid,isPIC(sections) ? EX_PIC : 0, /* @@@ DYNAMIC? */
               aout_getpagedsize(gv,sections,0),
               aout_getpagedsize(gv,sections,1),
               aout_getpagedsize(gv,sections,2),

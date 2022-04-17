@@ -1441,7 +1441,7 @@ void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
               sections[1] ? sections[1]->size+align(sections[0]->size,a) : 0,
               sections[2] ? sections[2]->size : 0,
               aoutsymlist.nextindex * sizeof(struct nlist32),
-              0,trsize,drsize,be);
+              0,0,0,be);
   // aout_pagedsection(gv,f,sections,0);
   // aout_pagedsection(gv,f,sections,1);
   aout_writesection(f,sections[0],(uint8_t)a);

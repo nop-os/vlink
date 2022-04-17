@@ -20,6 +20,7 @@
 /* Edit the following defines for your system: */
 
 /* Default path to search for library. Example: "/usr/lib" */
+/*
 #ifdef __VBCC__
 #if defined(__MORPHOS__)
 #define LIBPATH "vlibmos:"
@@ -31,8 +32,10 @@
 #define LIBPATH "vlibos3:"
 #endif
 #endif
+*/
 
 /* Default target file format. Example: "elf32ppcbe" */
+/*
 #if defined(__MORPHOS__)
 #define DEFTARGET "elf32morphos"
 #elif defined(__amigaos4__)
@@ -46,6 +49,9 @@
 #elif defined(atarist)
 #define DEFTARGET "ataritos"
 #endif
+*/
+
+#define DEFTARGET "aoutnull"
 
 /* Targets to be included */
 #define ADOS                /* AmigaOS 68k hunk format */

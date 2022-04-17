@@ -1415,11 +1415,14 @@ void aoutstd_writeshared(struct GlobalVars *gv,FILE *f)
 
 
 void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
-/* creates a standard a.out paged executable file */
+/* creates a standard a.out executable file */
 {
+  // note: this was edited for nop, as we *want* a non-paged executable
   uint32_t mid = fff[gv->dest_format]->id;
   int be = (int)fff[gv->dest_format]->endianess;
   struct LinkedSection *sections[3];
+  
+  unsigned long a = MIN_ALIGNMENT;
 
   if (be < 0)
     be = gv->endianess;
@@ -1433,14 +1436,16 @@ void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
   calc_relocs(gv,sections[0]);
   calc_relocs(gv,sections[1]);
 
-  aout_header(f,OMAGIC,mid,isPIC(sections) ? EX_PIC : 0, /* @@@ DYNAMIC? */
-              aout_getpagedsize(gv,sections,0),
-              aout_getpagedsize(gv,sections,1),
-              aout_getpagedsize(gv,sections,2),
+  aout_header(f,OMAGIC,mid,isPIC(sections) ? EX_PIC : 0,
+              sections[0] ? sections[0]->size+align(sections[0]->size,a) : 0,
+              sections[1] ? sections[1]->size+align(sections[0]->size,a) : 0,
+              sections[2] ? sections[2]->size : 0,
               aoutsymlist.nextindex * sizeof(struct nlist32),
-              (uint32_t)entry_address(gv),0,0,be);
-  aout_pagedsection(gv,f,sections,0);
-  aout_pagedsection(gv,f,sections,1);
+              0,trsize,drsize,be);
+  // aout_pagedsection(gv,f,sections,0);
+  // aout_pagedsection(gv,f,sections,1);
+  aout_writesection(f,sections[0],(uint8_t)a);
+  aout_writesection(f,sections[1],(uint8_t)a);
   aout_writesymbols(f);
   aout_writestrings(f,be);
 }

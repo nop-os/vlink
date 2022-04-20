@@ -39,6 +39,7 @@ static const char null_exe[] = {
   "    VBCC_CONSTRUCTORS\n"
   "    *(.rodata*)\n"
   "    *(.d* d* D*)\n"
+  "    *(.data.ro*)\n"
   "    *(.sdata*)\n"
   "    *(__MERGED)\n"
   "    _edata = .;\n"

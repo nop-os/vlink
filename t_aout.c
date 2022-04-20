@@ -1370,13 +1370,13 @@ void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
 {
   // note: this was edited for nop, as we *want* a non-paged executable
   uint32_t mid = fff[gv->dest_format]->id;
-  int be = (int)fff[gv->dest_format]->endianess;
+  int be = (int)fff[gv->dest_format]->endianness;
   struct LinkedSection *sections[3];
   
   unsigned long a = MIN_ALIGNMENT;
 
   if (be < 0)
-    be = gv->endianess;
+    be = gv->endianness;
   aout_initwrite(gv,sections);
   if (sections[0] == NULL)  /* this requires a .text section! */
     error(97,fff[gv->dest_format]->tname,TEXTNAME);
@@ -1395,8 +1395,8 @@ void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
               (uint32_t)entry_address(gv),0,0,be);
   // aout_pagedsection(gv,f,sections,0);
   // aout_pagedsection(gv,f,sections,1);
-  aout_writesection(f,sections[0],(uint8_t)a);
-  aout_writesection(f,sections[1],(uint8_t)a);
+  aout_writesection(gv,f,sections[0],(uint8_t)a);
+  aout_writesection(gv,f,sections[1],(uint8_t)a);
   aout_writesymbols(f);
   aout_writestrings(f,be);
 }

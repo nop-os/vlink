@@ -64,9 +64,7 @@ static bool portable_pattern_match(const char *mask, const char *name)
 
 bool pattern_match(const char *mask, const char *name)
 {
-  printf("comparing '%s' with '%s'\n", name, mask);
   bool result = !portable_pattern_match(mask,name);
-  if (result) printf("success!\n");
   return result;
 }
 

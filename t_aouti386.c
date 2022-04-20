@@ -3,14 +3,6 @@
  * This file is part of vlink, a portable linker for multiple
  * object formats.
  * Copyright (c) 1997-2010  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2010 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
  */
 
 #include "config.h"
@@ -23,7 +15,7 @@
 static const char zmagic_exe[] = {
   "SECTIONS\n"
   "{\n"
-  "  . = 0xF8000000;\n"
+  "  . = 0x1020;\n"
   "  .text :\n"
   "  {\n"
   "    /*CREATE_OBJECT_SYMBOLS*/\n"
@@ -43,12 +35,11 @@ static const char zmagic_exe[] = {
   "    *(.dynamic)\n"
   "    *(.got)\n"
   "    *(.plt)\n"
-  "    *(.data*)\n"
+  "    *(.data)\n"
   "    /*CONSTRUCTORS*/\n"
   "    _edata  =  .;\n"
   "    __edata  =  .;\n"
   "  }\n"
-  "  . = ALIGN(0x1000);\n"
   "  .bss :\n"
   "  {\n"
   "    __bss_start = .;\n"
@@ -62,11 +53,14 @@ static const char zmagic_exe[] = {
 
 
 #ifdef AOUT_BSDI386
-static int aoutbsdi386_identify(char *,uint8_t *,unsigned long,bool);
+static int aoutbsdi386_identify(struct GlobalVars *,char *,uint8_t *,
+                                unsigned long,bool);
 
 struct FFFuncs fff_aoutbsdi386 = {
   "aoutbsdi386",
   zmagic_exe,
+  NULL,
+  NULL,
   NULL,
   aout_headersize,
   aoutbsdi386_identify,
@@ -87,17 +81,20 @@ struct FFFuncs fff_aoutbsdi386 = {
   MID_I386,
   RTAB_STANDARD,RTAB_STANDARD,
   _LITTLE_ENDIAN_,
-  32,
+  32,0,
   FFF_BASEINCR
 };
 #endif
 
 #ifdef AOUT_PC386
-static int aoutpc386_identify(char *,uint8_t *,unsigned long,bool);
+static int aoutpc386_identify(struct GlobalVars *,char *,uint8_t *,
+                              unsigned long,bool);
 
 struct FFFuncs fff_aoutpc386 = {
   "aoutpc386",
   zmagic_exe,
+  NULL,
+  NULL,
   NULL,
   aout_headersize,
   aoutpc386_identify,
@@ -118,14 +115,15 @@ struct FFFuncs fff_aoutpc386 = {
   MID_PC386,
   RTAB_STANDARD,RTAB_STANDARD,
   _LITTLE_ENDIAN_,
-  32,
+  32,0,
   FFF_BASEINCR
 };
 #endif
 
 
 #ifdef AOUT_BSDI386
-static int aoutbsdi386_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int aoutbsdi386_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                                unsigned long plen,bool lib)
 {
   return (aout_identify(&fff_aoutbsdi386,name,(struct aout_hdr *)p,plen));
 }
@@ -133,7 +131,7 @@ static int aoutbsdi386_identify(char *name,uint8_t *p,unsigned long plen,bool li
 
 
 #ifdef AOUT_PC386
-static int aoutpc386_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int aoutpc386_identify(struct GlobalVars *gv,char *name,uint8_t *p,unsigned long plen,bool lib)
 {
   return (aout_identify(&fff_aoutpc386,name,(struct aout_hdr *)p,plen));
 }

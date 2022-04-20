@@ -1,16 +1,8 @@
-/* $VER: vlink t_rawseg.c V0.14b (17.02.13)
+/* $VER: vlink t_rawseg.c V0.16h (10.03.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2013  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2013 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2021  Frank Wille
  */
 
 
@@ -24,12 +16,13 @@
 struct SegReloc {
   struct SegReloc *next;
   struct Phdr *seg;
-  unsigned long offset;
+  lword offset;
 };
 
 
 static unsigned long rawseg_headersize(struct GlobalVars *);
-static int rawseg_identify(char *,uint8_t *,unsigned long,bool);
+static int rawseg_identify(struct GlobalVars *,char *,uint8_t *,
+                           unsigned long,bool);
 static void rawseg_readconv(struct GlobalVars *,struct LinkFile *);
 static int rawseg_targetlink(struct GlobalVars *,struct LinkedSection *,
                               struct Section *);
@@ -54,6 +47,8 @@ struct FFFuncs fff_rawseg = {
   "rawseg",
   defaultscript,
   NULL,
+  NULL,
+  NULL,
   rawseg_headersize,
   rawseg_identify,
   rawseg_readconv,
@@ -72,8 +67,8 @@ struct FFFuncs fff_rawseg = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1,   /* endianness undefined, only write */
+  0,0   /* addr_bits from input */
 };
 #endif
 
@@ -89,7 +84,8 @@ static unsigned long rawseg_headersize(struct GlobalVars *gv)
 }
 
 
-static int rawseg_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int rawseg_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                           unsigned long plen,bool lib)
 /* identify a binary file */
 {
   return ID_UNKNOWN;  /* binaries are only allowed to be written! */
@@ -148,22 +144,14 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
 
       firstsec = TRUE;
       srlist = NULL;
-      snprintf(buf,256,"%s.%s",gv->dest_name,p->name);
-      segf = fopen(buf,"wb");
-      if (segf == NULL) {
-        error(29,buf);  /* cannot create file */
-        continue;
-      }
-
-      /* write file name, start address and length of segment to output */
-      fprintf(f,"\"%s\" 0x%llx 0x%llx\n",buf,p->start,p->mem_end-p->start);
+      segf = NULL;
 
       /* write segment's sections */
       for (ls=(struct LinkedSection *)gv->lnksec.first;
            ls->n.next!=NULL; ls=(struct LinkedSection *)ls->n.next) {
         if (ls->copybase>=(unsigned long)p->start &&
             (ls->copybase+ls->size)<=(unsigned long)p->mem_end &&
-            (ls->flags & SF_ALLOC)) {
+            (ls->flags & SF_ALLOC) && !(ls->ld_flags & LSF_NOLOAD)) {
 
           if (gv->keep_relocs) {
             /* remember relocations, adjusted from section to segment base */
@@ -175,11 +163,12 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
             for (r=(struct Reloc *)ls->relocs.first;
                  r->n.next!=NULL; r=(struct Reloc *)r->n.next) {
               if (ri = r->insert) {
-                if (r->rtype!=R_ABS || ri->bpos!=0 || ri->bsiz!=32) {
-                  /* only absolute 32-bit relocs are supported */
+                if (r->rtype!=R_ABS ||
+                    ri->bpos!=0 || ri->bsiz!=gv->bits_per_taddr) {
+                  /* only abs. relocs with target addr size are supported */
                   error(32,fff_rawseg.tname,reloc_name[r->rtype],
-                        (int)ri->bpos,(int)ri->bsiz,ri->mask,
-                        ls->name,r->offset);
+                        (int)ri->bpos,(int)ri->bsiz,
+                        (unsigned long long)ri->mask,ls->name,r->offset);
                   continue;
                 }
               }
@@ -193,9 +182,10 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
                   ierror("%sReloc type %d (%s) at %s+0x%lx "
                          "(addend 0x%llx) is missing a relocsect.lnk",
                          fn,(int)r->rtype,reloc_name[r->rtype],ls->name,
-                         r->offset,r->addend);
+                         r->offset,(unsigned long long)r->addend);
               }
               relsec = r->relocsect.lnk;
+              /* @@@ Check for SF_ALLOC? Shouldn't matter here. */
 
               /* find out to which segment relsec belongs */
               for (relph=gv->phdrlist; relph; relph=relph->next) {
@@ -203,24 +193,30 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
                     relph->start!=ADDR_NONE && relph->start_vma!=ADDR_NONE) {
                   if (relsec->copybase>=(unsigned long)relph->start &&
                       (relsec->copybase+relsec->size)<=
-                      (unsigned long)relph->mem_end &&
-                      (relsec->flags & SF_ALLOC))
+                      (unsigned long)relph->mem_end)
                     break;
                 }
               }
               /* use segment's base address for relocation instead */
               if (relph) {
-                lword segoffs,a,v;
+                lword segoffs,v;
                 struct SegReloc *newsr,*srp;
 
                 segoffs = (lword)relsec->copybase - relph->start;
-                v = writesection(gv,ls->data+r->offset,r,r->addend+segoffs);
+                v = writesection(gv,ls->data,r->offset,r,r->addend+segoffs);
                 if (v != 0) {
                   /* Calculated value doesn't fit into relocation type x ... */
-                  if (ri = r->insert)
-                    error(35,gv->dest_name,ls->name,r->offset,v,
-                          reloc_name[r->rtype],(int)ri->bpos,
-                          (int)ri->bsiz,ri->mask);
+                  if (ri = r->insert) {
+                    struct Section *isec;
+                    unsigned long ioffs;
+
+                    isec = getinpsecoffs(ls,r->offset,&ioffs);
+                    /*print_function_name(isec,ioffs);*/
+                    error(35,gv->dest_name,ls->name,r->offset,
+                          getobjname(isec->obj),isec->name,ioffs,
+                          v,reloc_name[r->rtype],(int)ri->bpos,
+                          (int)ri->bsiz,(unsigned long long)ri->mask);
+                  }
                   else
                     ierror("%sReloc (%s+%lx), type=%s, without RelocInsert",
                            fn,ls->name,r->offset,reloc_name[r->rtype]);
@@ -248,29 +244,44 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
           else
             calc_relocs(gv,ls);
 
+          if (segf == NULL) {
+            /* create output file for segment, when not already opened */
+            snprintf(buf,256,"%s.%s",gv->dest_name,p->name);
+            segf = fopen(buf,"wb");
+            if (segf == NULL) {
+              error(29,buf);  /* cannot create file */
+              break;
+            }
+            /* write file name, start addr. and length of segment to output */
+            fprintf(f,"\"%s\" 0x%llx 0x%llx\n",
+                    buf,(unsigned long long)p->start,
+                    (unsigned long long)p->mem_end-p->start);
+          }
+
           if (!firstsec) {
             /* write an alignment gap, when needed */
             if (ls->copybase > addr)
-              fwritegap(segf,ls->copybase-addr);
+              fwritegap(gv,segf,ls->copybase-addr);
             else if (ls->copybase < addr)
               error(98,fff[gv->dest_format]->tname,ls->name,prevls->name);
           }
           else
             firstsec = FALSE;
 
-          fwritex(segf,ls->data,ls->size);
+          fwritex(segf,ls->data,tbytes(gv,ls->size));
 
           addr = ls->copybase + ls->size;
           prevls = ls;
         }
       }
-      fclose(segf);
+      if (segf != NULL)
+        fclose(segf);
 
       if (srlist) {
         /* write relocation files for this segment */
         struct Phdr *relph;
         struct SegReloc *sr;
-        uint32_t rcnt;
+        unsigned rcnt;
         FILE *rf;
 
         for (relph=gv->phdrlist; relph; relph=relph->next) {
@@ -284,22 +295,17 @@ static void rawseg_writeexec(struct GlobalVars *gv,FILE *f)
                   error(29,buf);  /* cannot create file */
                   continue;
                 }
-                fwritegap(rf,4);  /* number of relocs will be stored here */
+                /* number of relocs will be stored here */
+                fwritetaddr(gv,rf,0);
               }
-              if (gv->endianess == _BIG_ENDIAN_)
-                fwrite32be(rf,sr->offset);
-              else
-                fwrite32le(rf,sr->offset);
+              fwritetaddr(gv,rf,sr->offset);
               rcnt++;
             }
           }
           if (rf) {
             /* write number of relocs into the first word */
             fseek(rf,0,SEEK_SET);
-            if (gv->endianess == _BIG_ENDIAN_)
-              fwrite32be(rf,rcnt);
-            else
-              fwrite32le(rf,rcnt);
+            fwritetaddr(gv,rf,(lword)rcnt);
             fclose(rf);
           }
         }

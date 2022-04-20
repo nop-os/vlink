@@ -2,6 +2,8 @@
 
 TARGET = vlink_mint
 DIR = MiNT
+MD = makedir
+RM = rm -f
 
 CC = vc +mint
 CCOUT = -o $(DUMMYVARIABLE)	# produces the string "-o "

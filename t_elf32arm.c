@@ -3,14 +3,6 @@
  * This file is part of vlink, a portable linker for multiple
  * object formats.
  * Copyright (c) 1997-2010  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2010 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
  */
 
 
@@ -22,7 +14,7 @@
 #include "rel_elfarm.h"
 
 
-static int armle_identify(char *,uint8_t *,unsigned long,bool);
+static int armle_identify(struct GlobalVars *,char *,uint8_t *,unsigned long,bool);
 static void armle_readconv(struct GlobalVars *,struct LinkFile *);
 static void armle_dyncreate(struct GlobalVars *);
 static void armle_writeobject(struct GlobalVars *,FILE *);
@@ -31,6 +23,8 @@ static void armle_writeexec(struct GlobalVars *,FILE *);
 
 struct FFFuncs fff_elf32armle = {
   "elf32armle",
+  NULL,
+  NULL,
   NULL,
   NULL,
   elf32_headersize,
@@ -54,7 +48,7 @@ struct FFFuncs fff_elf32armle = {
   0,
   RTAB_STANDARD,RTAB_STANDARD|RTAB_ADDEND,
   _LITTLE_ENDIAN_,
-  32
+  32,2
 };
 
 
@@ -64,7 +58,8 @@ struct FFFuncs fff_elf32armle = {
 /*****************************************************************/
 
 
-static int armle_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int armle_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                          unsigned long plen,bool lib)
 /* identify ELF-ARM-32Bit-LittleEndian */
 {
   return (elf_identify(&fff_elf32armle,name,p,plen,
@@ -74,7 +69,7 @@ static int armle_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
 
 static uint8_t armle_reloc_elf2vlink(uint8_t rtype,struct RelocInsert *ri)
 /* Determine vlink internal reloc type from ELF reloc type and fill in
-   reloc-insert description informations.
+   reloc-insert description information.
    All fields of the RelocInsert structure are preset to zero. */
 {
   /* Reloc conversion table for V.4-ABI - @@@ INCOMPLETE!!! */
@@ -157,9 +152,9 @@ static void armle_readconv(struct GlobalVars *gv,struct LinkFile *lf)
     if (ar_init(&ai,(char *)lf->data,lf->length,lf->filename)) {
       while (ar_extract(&ai)) {
         lf->objname = allocstring(ai.name);
-        elf_check_ar_type(fff[lf->format],lf->pathname,ai.data,
-                          ELFCLASS32,ELFDATA2LSB,ELF_VER,1,EM_ARM);
-        elf32_parse(gv,lf,(struct Elf32_Ehdr *)ai.data,armle_reloc_elf2vlink);
+        if (elf_check_ar_type(fff[lf->format],lf->pathname,ai.data,
+                              ELFCLASS32,ELFDATA2LSB,ELF_VER,1,EM_ARM))
+          elf32_parse(gv,lf,(struct Elf32_Ehdr *)ai.data,armle_reloc_elf2vlink);
       }
     }
     else
@@ -246,7 +241,7 @@ static uint8_t armle_reloc_vlink2elf(struct Reloc *r)
 
 
 static void armle_writeshared(struct GlobalVars *gv,FILE *f)
-/* creates a target-elf32armle shared object (which is pos. independant) */
+/* creates a target-elf32armle shared object (which is pos. independent) */
 {
   ierror("armle_writeshared(): Shared object generation has not "
          "yet been implemented");

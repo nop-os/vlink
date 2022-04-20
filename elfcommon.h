@@ -1,16 +1,8 @@
-/* $VER: vlink elfcommon.h V0.14 (29.07.11)
+/* $VER: vlink elfcommon.h V0.15e (23.03.17)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2011  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2011 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2017  Frank Wille
  */
 
 
@@ -76,6 +68,7 @@
 #define EM_COLDFIRE       52
 #define EM_68HC12         53
 #define EM_X86_64         62
+#define EM_JAGRISC        0x9004
 #define EM_CYGNUS_POWERPC 0x9025
 #define EM_ALPHA          0x9026
 
@@ -130,7 +123,7 @@
 #define SHT_FINI_ARRAY    15          /* Array of destructors */
 #define SHT_PREINIT_ARRAY 16          /* Array of pre-constructors */
 #define SHT_GROUP         17          /* Section group */
-#define SHT_SYMTAB_SHNDX  18          /* Extended section indeces */ 
+#define SHT_SYMTAB_SHNDX  18          /* Extended section indices */ 
 #define SHT_NUM           19          /* Number of defined types.  */
 #define SHT_LOOS          0x60000000  /* Start OS-specific */   
 #define SHT_GNU_LIBLIST   0x6ffffff7  /* Prelink library list */
@@ -323,9 +316,11 @@ struct ELF2vlink {
 #define SDA2BASE        1   /* _SDA2_BASE_ */
 #define CTORS           2   /* __CTOR_LIST__ */
 #define DTORS           3   /* __DTOR_LIST__ */
-#define GLOBOFFSTAB     4   /* _GLOBAL_OFFSET_TABLE_ */
-#define PROCLINKTAB     5   /* _PROCEDURE_LINKAGE_TABLE_ */
-#define DYNAMICSYM      6   /* _DYNAMIC */
+#define CTOREND         4   /* __CTOR_LIST_END */
+#define DTOREND         5   /* __DTOR_LIST_END */
+#define GLOBOFFSTAB     6   /* _GLOBAL_OFFSET_TABLE_ */
+#define PROCLINKTAB     7   /* _PROCEDURE_LINKAGE_TABLE_ */
+#define DYNAMICSYM      8   /* _DYNAMIC */
 
 
 /* global data from t_elf.c */
@@ -339,7 +334,7 @@ extern struct list shdrlist;
 extern struct list elfdynsymlist;
 extern struct Section *elfdynrelocs;       
 extern struct Section *elfpltrelocs; 
-extern int8_t elf_endianess;
+extern int8_t elf_endianness;
 extern uint32_t elfshdridx,elfsymtabidx,elfshstrtabidx,elfstrtabidx;
 extern uint32_t elfoffset;
 extern unsigned long elf_file_hdr_gap;
@@ -358,7 +353,7 @@ extern const char *pltrel_name[2];
 /* functions for reading */
 int elf_identify(struct FFFuncs *,char *,void *,lword,unsigned char,
                  unsigned char,uint16_t,uint32_t);
-void elf_check_ar_type(struct FFFuncs *,const char *,void *,unsigned char,
+bool elf_check_ar_type(struct FFFuncs *,const char *,void *,unsigned char,
                        unsigned char,uint32_t,int,...);
 void elf_check_offset(struct LinkFile *,char *,void *,lword);
 struct Section *elf_add_section(struct GlobalVars *,struct ObjectUnit *,
@@ -377,7 +372,8 @@ void elf_setlnksym(struct GlobalVars *,struct Symbol *);
 struct Section *elf_dyntable(struct GlobalVars *,unsigned long,unsigned long,
                              uint8_t,uint8_t,uint8_t,int);
 void elf_adddynsym(struct Symbol *);
-void elf_dynreloc(struct ObjectUnit *,struct Reloc *,int,size_t);
+void elf_dynreloc(struct GlobalVars *,struct ObjectUnit *,struct Reloc *,
+                  int,size_t);
 struct Section *elf_initdynlink(struct GlobalVars *);
 struct Symbol *elf_pltgotentry(struct GlobalVars *,struct Section *,DynArg,
                                uint8_t,unsigned long,unsigned long,int,

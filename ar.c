@@ -3,14 +3,6 @@
  * This file is part of vlink, a portable linker for multiple
  * object formats.
  * Copyright (c) 1997-2010  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2010 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
  */
 
 
@@ -34,7 +26,7 @@ bool ar_init(struct ar_info *ai,char *p,unsigned long plen,const char *name)
 
 
 bool ar_extract(struct ar_info *ai)
-/* fill ar_info structure with informations about the next */
+/* fill ar_info structure with information about the next */
 /* archive member */
 {
   struct ar_hdr *ah;

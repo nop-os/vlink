@@ -1,16 +1,8 @@
-/* $VER: vlink t_aout.c V0.14d (14.04.14)
+/* $VER: vlink t_aout.c V0.16i (14.11.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2014  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2014 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2021  Frank Wille
  */
 
 #include "config.h"
@@ -122,6 +114,7 @@ int aout_identify(struct FFFuncs *ff,char *name,struct aout_hdr *p,
               error(39,name,ff->tname); /* no shared objects in lib archives */
             else
               error(40,name,ff->tname); /* no executables in lib archives */
+            return (ID_UNKNOWN);
           }
           if (fl == EX_DYNAMIC|EX_PIC)
             return (ID_SHAREDOBJ);
@@ -136,7 +129,7 @@ int aout_identify(struct FFFuncs *ff,char *name,struct aout_hdr *p,
 }
 
 
-static void aout_check_ar_type(struct FFFuncs *ff,const char *name,
+static bool aout_check_ar_type(struct FFFuncs *ff,const char *name,
                                struct aout_hdr *hdr)
 /* check all library archive members before conversion */
 {
@@ -148,16 +141,16 @@ static void aout_check_ar_type(struct FFFuncs *ff,const char *name,
           error(39,name,ff->tname); /* no shared objects in lib archives */
         else
           error(40,name,ff->tname); /* no executables in lib archives */
-        return;
+        return FALSE;
       case QMAGIC:
         error(84,name); /* QMAGIC is deprecated */
       case OMAGIC:
-        return;
+        return TRUE;
       default:
         break;
     }
   }
-  error(41,name,ff->tname);
+  return FALSE;
 }
 
 
@@ -463,11 +456,19 @@ static void aout_newreloc(struct GlobalVars *gv,struct aout_hdr *hdr,
   const char *fn = "aout_newreloc(): ";
   struct ObjectUnit *ou = sec->obj;
   struct LinkFile *lf = ou->lnkfile;
-  lword mask = -1;
-  lword a = readsection(gv,rtype,sec->data+offs,0,size,mask);
+  struct RelocInsert ri,ri2;
+  lword a;
 
-  if (rtype == R_AOUT_MOVEI)
-    a = sign_extend(SWAP16(a),32);  /* swap 16-bit words */
+  /* read the addend from the relocation field */
+  if (rtype == R_AOUT_MOVEI) {
+    initRelocInsert(&ri,0,16,0xffff);
+    ri.next = initRelocInsert(&ri2,16,16,0xffff0000);
+    rtype = R_ABS;
+  }
+  else
+    initRelocInsert(&ri,0,size,-1);
+
+  a = readsection(gv,rtype,sec->data,offs,&ri);
 
   if (xtern) {
     /* relocation by an external reference to an unknown symbol */
@@ -480,18 +481,8 @@ static void aout_newreloc(struct GlobalVars *gv,struct aout_hdr *hdr,
       /* fix a.out specific PC-relative relocs */
       a += (lword)saddr + (lword)offs;
     }
-
-    if (nlst[symidx].n_type == N_EXT|N_UNDF) {
-      if (rtype == R_AOUT_MOVEI) {
-        addreloc(sec,newreloc(gv,sec,xrefname,NULL,0,offs,R_ABS,a),
-                 0,16,0xffff);
-        addreloc(sec,newreloc(gv,sec,xrefname,NULL,0,offs+2,R_ABS,a),
-                 0,16,0xffff0000);
-      }
-      else
-        addreloc(sec,newreloc(gv,sec,xrefname,NULL,0,offs,rtype,a),
-                 0,size,mask);
-    }
+    if (nlst[symidx].n_type == N_EXT|N_UNDF)
+      addreloc_ri(sec,newreloc(gv,sec,xrefname,NULL,0,offs,rtype,a),&ri);
     else
       error(91,lf->pathname,xrefname,sec->name);  /* illegal ext. ref. */
   }
@@ -514,13 +505,14 @@ static void aout_newreloc(struct GlobalVars *gv,struct aout_hdr *hdr,
       case N_DATA:
         if (!(rsec = find_sect_type(ou,ST_DATA,SP_READ|SP_WRITE)))
           ierror("%sno .data for reloc found",fn);
-        rsaddr = read32(be,hdr->a_text);
+        rsaddr = rtype==R_SD ? 0 : read32(be,hdr->a_text);
         break;
 
       case N_BSS:
         if (!(rsec = find_sect_type(ou,ST_UDATA,SP_READ|SP_WRITE)))
           ierror("%sno .bss for reloc found",fn);
-        rsaddr = read32(be,hdr->a_text) + read32(be,&hdr->a_data);
+        rsaddr = rtype==R_SD ? read32(be,&hdr->a_data) :
+                 read32(be,hdr->a_text) + read32(be,&hdr->a_data);
         break;
 
       default:
@@ -532,7 +524,6 @@ static void aout_newreloc(struct GlobalVars *gv,struct aout_hdr *hdr,
     /* fix addend for a.out */
     switch (rtype) {
       case R_ABS:
-      case R_AOUT_MOVEI:
         a -= (lword)rsaddr;
         break;
       case R_PC:
@@ -546,14 +537,7 @@ static void aout_newreloc(struct GlobalVars *gv,struct aout_hdr *hdr,
         break;
     }
 
-    if (rtype == R_AOUT_MOVEI) {
-      addreloc(sec,newreloc(gv,sec,NULL,rsec,0,offs,R_ABS,a),
-               0,16,0xffff);
-      addreloc(sec,newreloc(gv,sec,NULL,rsec,0,offs+2,R_ABS,a),
-               0,16,0xffff0000);
-    }
-    else
-      addreloc(sec,newreloc(gv,sec,NULL,rsec,0,offs,rtype,a),0,size,mask);
+    addreloc_ri(sec,newreloc(gv,sec,NULL,rsec,0,offs,rtype,a),&ri);
   }
 }
 
@@ -609,8 +593,6 @@ struct Symbol *aout_lnksym(struct GlobalVars *gv,struct Section *sec,
 void aout_setlnksym(struct GlobalVars *gv,struct Symbol *xdef)
 /* Initialize common a.out linker symbol structure during resolve_xref() */
 {
-  struct FFFuncs *tf = fff[gv->dest_format];
-
   if (xdef->flags & SYMF_LNKSYM) {
     switch (xdef->extra) {
       case GOTSYM:
@@ -647,14 +629,14 @@ void aoutstd_relocs(struct GlobalVars *gv,struct ObjectUnit *ou,
 
     for (i=0; i<(rsize/sizeof(struct relocation_info)); i++,reloc++) {
       uint32_t *info = &reloc->r_info;
-      uint32_t symnum = readbf32(be,info,RELB_symbolnum,RELS_symbolnum);
-      int size = readbf32(be,info,RSTDB_length,RSTDS_length);
-      int pcrel = readbf32(be,info,RSTDB_pcrel,RSTDS_pcrel);
-      int baserel = readbf32(be,info,RSTDB_baserel,RSTDS_baserel);
-      int jmptable = readbf32(be,info,RSTDB_jmptable,RSTDS_jmptable);
-      int relative = readbf32(be,info,RSTDB_relative,RSTDS_relative);
-      int copy = readbf32(be,info,RSTDB_copy,RSTDS_copy);
-      int xtern = readbf32(be,info,RSTDB_extern,RSTDS_extern);
+      uint32_t symnum = readbf(be,info,4,RELB_symbolnum,RELS_symbolnum);
+      int size = readbf(be,info,4,RSTDB_length,RSTDS_length);
+      int pcrel = readbf(be,info,4,RSTDB_pcrel,RSTDS_pcrel);
+      int baserel = readbf(be,info,4,RSTDB_baserel,RSTDS_baserel);
+      int jmptable = readbf(be,info,4,RSTDB_jmptable,RSTDS_jmptable);
+      int relative = readbf(be,info,4,RSTDB_relative,RSTDS_relative);
+      int copy = readbf(be,info,4,RSTDB_copy,RSTDS_copy);
+      int xtern = readbf(be,info,4,RSTDB_extern,RSTDS_extern);
       uint8_t rtype;
 
       if (!pcrel && !baserel && !jmptable && !relative && !copy) {
@@ -671,8 +653,8 @@ void aoutstd_relocs(struct GlobalVars *gv,struct ObjectUnit *ou,
         /* MID 0 and 32-bit COPY reloc may indicate a Jaguar GPU
            MOVEI RISC-instruction, which has swapped 16-bit words */
         rtype = R_AOUT_MOVEI;
-        if (gv->endianess < 0)
-          gv->endianess = _BIG_ENDIAN_;  /* Jaguar is big-endian */
+        if (gv->endianness < 0)
+          gv->endianness = _BIG_ENDIAN_;  /* Jaguar is big-endian */
       }
       else
         ierror("aoutstd_relocs(): %s (%s): Reloc type "
@@ -710,21 +692,23 @@ void aoutstd_read(struct GlobalVars *gv,struct LinkFile *lf,
   int be;
   struct ObjectUnit *u;
 
-  /* determine endianess */
-  if (fff[lf->format]->endianess < 0) {
-    if (gv->endianess < 0) {
-      /* unknown endianess, default to BE */
-      be = gv->endianess = host_endianess();
+  /* determine endianness */
+  if (fff[lf->format]->endianness < 0) {
+    if (gv->endianness < 0) {
+      /* unknown endianness, default to BE */
+      be = gv->endianness = host_endianness();
       error(128,lf->pathname,endian_name[be]);
     }
     else
-      be = gv->endianess;
+      be = gv->endianness;
   }
   else
-    be = fff[lf->format]->endianess;
+    be = fff[lf->format]->endianness;
 
-  if (lf->type == ID_LIBARCH)  /* check ar-member for correct format */
-    aout_check_ar_type(fff[lf->format],lf->pathname,hdr);
+  if (lf->type == ID_LIBARCH) {  /* check ar-member for correct format */
+    if (!aout_check_ar_type(fff[lf->format],lf->pathname,hdr))
+      return;  /* malformatted, so ignore */
+  }
 
   u = create_objunit(gv,lf,lf->objname);
 
@@ -797,9 +781,6 @@ static int aout_sectindex(struct LinkedSection **sections,
 
 void aout_initwrite(struct GlobalVars *gv,struct LinkedSection **sections)
 {
-  static const char *fn = "aout_initwrite(): ";
-  struct LinkedSection *ls;
-
   initlist(&aoutstrlist.l);
   aoutstrlist.hashtab = alloczero(STRHTABSIZE*sizeof(struct StrTabNode *));
   aoutstrlist.nextoffset = 4;  /* first string is always at offset 4 */
@@ -1046,39 +1027,6 @@ static int aout_findsym(const char *name,bool be)
 }
 
 
-static void detect_movei_relocs(struct Reloc *first)
-/* Search for possible MOVEI RISC relocations and flag them by the
-   internal type R_AOUT_MOVEI. */
-{
-  struct Reloc *r;
-  struct RelocInsert *ri;
-
-  for (r=first; r->n.next!=NULL; r=(struct Reloc *)r->n.next) {
-    if (r->rtype==R_ABS && (ri = r->insert)) {
-      if (ri->bpos==0 && !ri->next && ri->bsiz==16 &&
-          (ri->mask&0xffffffff)==0xffff0000) {
-        /* Found a MOVEI reloc candidate. The 16-bit word to the left needs
-           another 16-bit reloc with mask=0xffff and the same addend
-           to confirm it! */
-        unsigned long off = r->offset - 2;
-        struct Reloc *r2;
-
-        for (r2=first; r2->n.next!=NULL; r2=(struct Reloc *)r2->n.next) {
-          if (r2->offset==off && r2->rtype==R_ABS && (ri = r2->insert)) {
-            if (ri->bpos==0 && !ri->next && ri->bsiz==16 && ri->mask==0xffff) {
-              /* MOVEI reloc with swapped words found */
-              r2->rtype = R_AOUT_MOVEI;
-              r->rtype = R_NONE;
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-
 static void aout_addreloclist(struct list *rlst,int32_t raddr,uint32_t rindex,
                               uint32_t rinfo,int be)
 /* add new relocation_info to .text or .data reloc-list */
@@ -1086,8 +1034,8 @@ static void aout_addreloclist(struct list *rlst,int32_t raddr,uint32_t rindex,
   struct RelocNode *rn = alloc(sizeof(struct RelocNode));
 
   write32(be,&rn->r.r_address,(uint32_t)raddr);
-  writebf32(be,&rn->r.r_info,RELB_symbolnum,RELS_symbolnum,rindex);
-  writebf32(be,&rn->r.r_info,RELB_reloc,RELS_reloc,rinfo);
+  writebf(be,&rn->r.r_info,4,RELB_symbolnum,RELS_symbolnum,rindex);
+  writebf(be,&rn->r.r_info,4,RELB_reloc,RELS_reloc,rinfo);
   addtail(rlst,&rn->n);
 }
 
@@ -1104,13 +1052,6 @@ uint32_t aout_addrelocs(struct GlobalVars *gv,struct LinkedSection **ls,
   lword a;
 
   if (ls[sec]) {
-    if (fff[gv->dest_format]->flags & AOUT_JAGRELOC) {
-      /* Output is for Atari Jaguar, so search for possible MOVEI RISC
-         relocations and flag them by the internal type R_AOUT_MOVEI. */
-      detect_movei_relocs((struct Reloc *)ls[sec]->relocs.first);
-      detect_movei_relocs((struct Reloc *)ls[sec]->xrefs.first);
-    }
-
     /* relocations */
     for (rel=(struct Reloc *)ls[sec]->relocs.first; rel->n.next!=NULL;
          rel=(struct Reloc *)rel->n.next) {
@@ -1119,16 +1060,24 @@ uint32_t aout_addrelocs(struct GlobalVars *gv,struct LinkedSection **ls,
       if (rel->flags & RELF_INTERNAL)
         continue;  /* internal relocations will never be exported */
 
-      /* fix addend for a.out */
-      a = (lword)ls[rsec]->base + rel->addend;
-      /* @@@ calculation for other relocs: baserel,jmptab,load-relative? */
+      /* fix addend for a.out and write into the section */
+      if (rel->rtype == R_SD) {
+        /* GNU-binutiles (Amiga 68k) compatible implementation, .data-based */
+        if (rsec==2 && ls[1]!=NULL && ls[2]!=NULL)
+          a = (lword)(ls[2]->base - ls[1]->base) + rel->addend;  /* .bss */
+        else
+          a = rel->addend;  /* .data */
+      }
+      else if (rel->rtype == R_PC)
+        a = rel->addend - ((lword)ls[sec]->base + rel->offset);
+      else
+        a = (lword)ls[rsec]->base + rel->addend;
+      /* @@@ calculation for other relocs: jmptab,load-relative? */
 
-      if (rel->rtype == R_AOUT_MOVEI)
-        a = sign_extend(SWAP16(a),32);
+      writesection(gv,ls[sec]->data,rel->offset,rel,a);
 
       if ((rinfo = getrinfo(gv,rel,FALSE,ls[sec]->name,rel->offset)) != ~0) {
         aout_addreloclist(rlst,rel->offset,(uint32_t)sectype[rsec],rinfo,be);
-        writesection(gv,ls[sec]->data+rel->offset,rel,a);
         rtabsize += sizeof(struct relocation_info);
       }
     }
@@ -1143,19 +1092,17 @@ uint32_t aout_addrelocs(struct GlobalVars *gv,struct LinkedSection **ls,
       if ((symidx = aout_findsym(rel->xrefname,be)) == -1)
         symidx = aout_addsym(rel->xrefname,0,0,0,N_UNDF|N_EXT,0,be);
 
-      /* fix addend for a.out */
+      /* fix addend for a.out and write into the section */
       if (rel->rtype == R_PC)
         a = rel->addend - (lword)(ls[sec]->base + rel->offset);
       else
         a = rel->addend;
       /* @@@ calculation for other relocs: baserel,jmptab,load-relative? */
 
-      if (rel->rtype == R_AOUT_MOVEI)
-        a = sign_extend(SWAP16(a),32);
+      writesection(gv,ls[sec]->data,rel->offset,rel,a);
 
       if ((rinfo = getrinfo(gv,rel,TRUE,ls[sec]->name,rel->offset)) != ~0) {
         aout_addreloclist(rlst,rel->offset,symidx,rinfo,be);
-        writesection(gv,ls[sec]->data+rel->offset,rel,a);
         rtabsize += sizeof(struct relocation_info);
       }
     }
@@ -1196,7 +1143,7 @@ static void check_overlap(struct GlobalVars *gv,struct LinkedSection *ls1,
 
 
 static bool isPIC(struct LinkedSection **secs)
-/* check if all sections contain position independant code (PIC) */
+/* check if all sections contain position independent code (PIC) */
 {
   int i;
 
@@ -1261,17 +1208,18 @@ void aout_pagedsection(struct GlobalVars *gv,FILE *f,
 {
   if (ls[sec]) {
     fwritex(f,ls[sec]->data,ls[sec]->size);
-    fwritegap(f,aout_getpagedsize(gv,ls,sec) -
+    fwritegap(gv,f,aout_getpagedsize(gv,ls,sec) -
               (sec ? ls[sec]->size : ls[sec]->size+sizeof(struct aout_hdr)));
   }
 }
 
 
-void aout_writesection(FILE *f,struct LinkedSection *ls,uint8_t alignment)
+void aout_writesection(struct GlobalVars *gv,FILE *f,
+                       struct LinkedSection *ls,uint8_t alignment)
 {
   if (ls) {
     fwritex(f,ls->data,ls->size);
-    fwrite_align(f,alignment,ls->size);
+    fwrite_align(gv,f,alignment,ls->size);
   }
 }
 
@@ -1314,13 +1262,13 @@ static uint32_t aoutstd_getrinfo(struct GlobalVars *gv,struct Reloc *rel,
 /* as used by M68k and x86 targets, */
 /* return ~0 when this relocation has to be ignored */
 {
-  int be = fff[gv->dest_format]->endianess;
-  struct RelocInsert *ri;
+  int be = fff[gv->dest_format]->endianness;
+  struct RelocInsert *ri,*ri2;
   uint32_t s=4,r=0;
   int b=0;
 
   if (be < 0)
-    be = gv->endianess;
+    be = gv->endianness;
 
   if (ri = rel->insert) {
     switch (rel->rtype) {
@@ -1337,38 +1285,41 @@ static uint32_t aoutstd_getrinfo(struct GlobalVars *gv,struct Reloc *rel,
         break;
     }
 
-    if (rel->rtype == R_AOUT_MOVEI) {
-      /* Jaguar RISC MOVEI instruction's swapped words are indicated by a
-         set RSTDB_copy bit. Reset reloc type to ABS and size to 32 bits. */
-      b = RSTDB_copy;
-      s = 2;
-      rel->rtype = R_ABS;
-      ri->bsiz = 32;
-      ri->mask = -1;
-    }
-    else if (ri->bpos==0 && ri->next==NULL &&
-             (ri->mask&makemask(ri->bsiz))==makemask(ri->bsiz)) {
+    if (ri->bpos==0 && ri->next==NULL &&
+        (ri->mask&makemask(ri->bsiz))==makemask(ri->bsiz)) {
       switch (ri->bsiz) {
         case 8: s=0; break;
         case 16: s=1; break;
         case 32: s=2; break;
       }
     }
+    else if (ri->bsiz==16 && (ri2 = ri->next)!=NULL) {
+      if (ri->bsiz==ri2->bsiz &&
+          ((ri->mask==0xffff && ri2->mask==0xffff0000) ||
+           (ri->mask==0xffff0000 && ri2->mask==0xffff)) &&
+          ((ri->bpos==0 && ri2->bpos==16) || (ri->bpos==16 && ri2->bpos==0))) {
+        /* Jaguar RISC MOVEI instruction's swapped words are indicated by a
+           set RSTDB_copy bit. Reset reloc type to ABS and size to 32 bits. */
+        b = RSTDB_copy;
+        s = 2;
+      }
+    }
 
     if (b && s<4) {
       if (b > 0)
-        writebf32(be,&r,b,1,1);
-      writebf32(be,&r,RSTDB_length,RSTDS_length,s);
-      writebf32(be,&r,RSTDB_extern,RSTDS_extern,xtern?1:0);
+        writebf(be,&r,4,b,1,1);
+      writebf(be,&r,4,RSTDB_length,RSTDS_length,s);
+      writebf(be,&r,4,RSTDB_extern,RSTDS_extern,xtern?1:0);
     }
     else {
       /* unsupported relocation type */
       error(32,fff[gv->dest_format]->tname,reloc_name[rel->rtype],
-            (int)ri->bpos,(int)ri->bsiz,ri->mask,sname,rel->offset);
+            (int)ri->bpos,(int)ri->bsiz,(unsigned long long)ri->mask,
+            sname,rel->offset);
     }
   }
 
-  return readbf32(be,&r,RELB_reloc,RELS_reloc);
+  return readbf(be,&r,4,RELB_reloc,RELS_reloc);
 }
 
 
@@ -1376,13 +1327,13 @@ void aoutstd_writeobject(struct GlobalVars *gv,FILE *f)
 /* creates a standard a.out relocatable object file */
 {
   uint32_t mid = fff[gv->dest_format]->id;
-  int be = (int)fff[gv->dest_format]->endianess;
+  int be = (int)fff[gv->dest_format]->endianness;
   struct LinkedSection *sections[3];
   uint32_t trsize,drsize;
   unsigned long a = MIN_ALIGNMENT;
 
   if (be < 0)
-    be = gv->endianess;
+    be = gv->endianness;
   aout_initwrite(gv,sections);
   aout_addsymlist(gv,sections,BIND_GLOBAL,0,be);
   aout_addsymlist(gv,sections,BIND_WEAK,0,be);
@@ -1397,8 +1348,8 @@ void aoutstd_writeobject(struct GlobalVars *gv,FILE *f)
               sections[2] ? sections[2]->size : 0,
               aoutsymlist.nextindex * sizeof(struct nlist32),
               0,trsize,drsize,be);
-  aout_writesection(f,sections[0],(uint8_t)a);
-  aout_writesection(f,sections[1],(uint8_t)a);
+  aout_writesection(gv,f,sections[0],(uint8_t)a);
+  aout_writesection(gv,f,sections[1],(uint8_t)a);
   aout_writerelocs(f,&treloclist);
   aout_writerelocs(f,&dreloclist);
   aout_writesymbols(f);
@@ -1415,7 +1366,7 @@ void aoutstd_writeshared(struct GlobalVars *gv,FILE *f)
 
 
 void aoutstd_writeexec(struct GlobalVars *gv,FILE *f)
-/* creates a standard a.out executable file */
+/* creates a standard a.out paged executable file */
 {
   // note: this was edited for nop, as we *want* a non-paged executable
   uint32_t mid = fff[gv->dest_format]->id;

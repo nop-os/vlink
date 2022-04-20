@@ -1,23 +1,19 @@
-/* $VER: vlink t_rawbin.c V0.14b (28.07.13)
+/* $VER: vlink t_rawbin.c V0.16i (31.01.22)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2013  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2013 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2022  Frank Wille
  */
 
 
 #include "config.h"
 #if defined(RAWBIN1) || defined(RAWBIN2) || \
     defined(SREC19) || defined(SREC28) || defined(SREC37) || \
-    defined(IHEX) || defined(SHEX1) || defined(AMSDOS) || defined(CBMPRG)
+    defined(IHEX) || defined(SHEX1) || \
+    defined(AMSDOS) || defined(APPLEBIN) || defined(ATARICOM) || \
+    defined(BBC) || defined(CBMPRG) || defined(COCOML) || \
+    defined(DRAGONBIN) || defined(JAGSRV) || defined(ORICMC) || \
+    defined(SINCQL)
 #define T_RAWBIN_C
 #include "vlink.h"
 
@@ -25,15 +21,39 @@
 #define MAXSREC 32 /* max. number of bytes in an S1/S2/S3 record */
 #define MAXIREC 32 /* max. number of bytes in an ihex record (actually 255) */
 
+#define QDOSHDR_SIZE 30  /* SinclairQL QDOS header */
+
+/* header types */
+enum {
+  HDR_NONE,
+  HDR_AMSDOS,
+  HDR_APPLEBIN,
+  HDR_ATARICOM,
+  HDR_BBC,
+  HDR_CBMPRG,
+  HDR_COCOML,
+  HDR_DRAGONBIN,
+  HDR_JAGSRV,
+  HDR_ORICMC,
+  HDR_QDOS,
+  HDR_XTCC
+};
+
+/* binary relocs (-q) */
+struct BinReloc {
+  struct BinReloc *next;
+  lword offset;
+};
 
 static unsigned long rawbin_headersize(struct GlobalVars *);
-static int rawbin_identify(char *,uint8_t *,unsigned long,bool);
+static int rawbin_identify(struct GlobalVars *,char *,uint8_t *,
+                           unsigned long,bool);
 static void rawbin_readconv(struct GlobalVars *,struct LinkFile *);
 static int rawbin_targetlink(struct GlobalVars *,struct LinkedSection *,
                               struct Section *);
 static void rawbin_writeobject(struct GlobalVars *,FILE *);
 static void rawbin_writeshared(struct GlobalVars *,FILE *);
-static void rawbin_writeexec(struct GlobalVars *,FILE *,bool,char);
+static void rawbin_writeexec(struct GlobalVars *,FILE *,bool,int);
 #ifdef RAWBIN1
 static void rawbin_writesingle(struct GlobalVars *,FILE *);
 #endif
@@ -44,9 +64,45 @@ static void rawbin_writemultiple(struct GlobalVars *,FILE *);
 static unsigned long amsdos_headersize(struct GlobalVars *);
 static void amsdos_write(struct GlobalVars *,FILE *);
 #endif
+#ifdef APPLEBIN
+static unsigned long applebin_headersize(struct GlobalVars *);
+static void applebin_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef ATARICOM
+static unsigned long ataricom_headersize(struct GlobalVars *);
+static void ataricom_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef BBC
+static void bbc_write(struct GlobalVars *,FILE *);
+#endif
 #ifdef CBMPRG
 static unsigned long cbmprg_headersize(struct GlobalVars *);
 static void cbmprg_write(struct GlobalVars *,FILE *);
+static void cbmreu_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef COCOML
+static unsigned long cocoml_headersize(struct GlobalVars *);
+static void cocoml_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef DRAGONBIN
+static unsigned long dragonbin_headersize(struct GlobalVars *);
+static void dragonbin_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef JAGSRV
+#define TOSHDR_SIZE 28
+#define JAGR_SIZE 18
+static unsigned long jagsrv_headersize(struct GlobalVars *);
+static void jagsrv_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef ORICMC
+static int oric_options(struct GlobalVars *,int,const char **,int *);
+static unsigned long oric_headersize(struct GlobalVars *);
+static void oric_write(struct GlobalVars *,FILE *);
+#endif
+#ifdef SINCQL
+static int sincql_options(struct GlobalVars *,int,const char **,int *);
+static unsigned long sincql_headersize(struct GlobalVars *);
+static void sincql_write(struct GlobalVars *,FILE *);
 #endif
 #ifdef SREC19
 static void srec19_write(struct GlobalVars *,FILE *);
@@ -64,12 +120,23 @@ static void ihex_write(struct GlobalVars *,FILE *);
 static void shex1_write(struct GlobalVars *,FILE *);
 #endif
 
+static lword execaddr;
+static FILE *hdrfile;
+static long hdroffs;
+static lword relocsize;
+static struct LinkedSection *hdrsect;
+
+static int autoexec;        /* used by oricmc */
+static lword stacksize;     /* used by sinclairql */
+static lword udatasize;     /* used by sinclairql */
+
 static const char defaultscript[] =
   "SECTIONS {\n"
   "  .text: { *(.text CODE text) *(seg*) *(.rodata*) }\n"
-  "  .data: { *(.data DATA data) }\n"
-  "  .bss: { *(.bss BSS bss) *(COMMON) }\n"
+  "  .data: { *(.data DATA data) PROVIDE(__edata=.); }\n"
+  "  .bss: { *(.bss BSS bss) *(COMMON) PROVIDE(__end=.); }\n"
   "  .comment 0 : { *(.comment) }\n"
+  "  PROVIDE(__bsslen=SIZEOF(.bss));\n"
   "}\n";
 
 
@@ -77,6 +144,8 @@ static const char defaultscript[] =
 struct FFFuncs fff_rawbin1 = {
   "rawbin1",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -96,9 +165,10 @@ struct FFFuncs fff_rawbin1 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32,
-  FFF_SECTOUT
+  -1, /* endianness undefined, only write */
+  0,  /* addr_bits from input */
+  0,  /* ptr-alignment unknown */
+  FFF_SECTOUT|FFF_KEEPRELOCS
 };
 #endif
 
@@ -106,6 +176,8 @@ struct FFFuncs fff_rawbin1 = {
 struct FFFuncs fff_rawbin2 = {
   "rawbin2",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -125,9 +197,10 @@ struct FFFuncs fff_rawbin2 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32,
-  FFF_SECTOUT
+  -1, /* endianness undefined, only write */
+  0,  /* addr_bits from input */
+  0,  /* ptr-alignment unknown */
+  FFF_SECTOUT|FFF_KEEPRELOCS
 };
 #endif
 
@@ -152,6 +225,8 @@ struct FFFuncs fff_amsdos = {
   "amsdos",
   amsdosscript,
   NULL,
+  NULL,
+  NULL,
   amsdos_headersize,
   rawbin_identify,
   rawbin_readconv,
@@ -170,8 +245,101 @@ struct FFFuncs fff_amsdos = {
   0,
   0,
   RTAB_UNDEF,0,
-  0, /* little endian */
-  16,
+  _LITTLE_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef APPLEBIN
+struct FFFuncs fff_applebin = {
+  "applebin",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  applebin_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  applebin_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _LITTLE_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef ATARICOM
+struct FFFuncs fff_ataricom = {
+  "ataricom",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  ataricom_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  ataricom_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _LITTLE_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef BBC
+struct FFFuncs fff_bbc = {
+  "bbc",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  rawbin_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  bbc_write,
+  NULL,NULL,
+  0,
+  0x8000,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _LITTLE_ENDIAN_,
+  16,0,
   FFF_SECTOUT
 };
 #endif
@@ -180,6 +348,8 @@ struct FFFuncs fff_amsdos = {
 struct FFFuncs fff_cbmprg = {
   "cbmprg",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   cbmprg_headersize,
   rawbin_identify,
@@ -199,16 +369,219 @@ struct FFFuncs fff_cbmprg = {
   0,
   0,
   RTAB_UNDEF,0,
-  0, /* little endian */
-  16,
+  _LITTLE_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+struct FFFuncs fff_cbmreu = {
+  "cbmreu",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  cbmprg_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  cbmreu_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _LITTLE_ENDIAN_,
+  16,0,
   FFF_SECTOUT
 };
 #endif
 
+#ifdef COCOML
+struct FFFuncs fff_cocoml = {
+  "cocoml",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  cocoml_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  cocoml_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _BIG_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef DRAGONBIN
+struct FFFuncs fff_dragonbin = {
+  "dragonbin",
+  defaultscript,
+  NULL,
+  NULL,
+  NULL,
+  dragonbin_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  dragonbin_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _BIG_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef JAGSRV
+static const char jaguarscript[] =
+  "SECTIONS {\n"
+  "  . = 0x4000;\n"
+  "  .text: {\n"
+  "    *(.text CODE text)\n"
+  "  }\n"
+  "  . = ALIGN(32);\n"
+  "  .data: {\n"
+  "    VBCC_CONSTRUCTORS\n"
+  "    *(.data DATA data)\n"
+  "  }\n"
+  "  . = ALIGN(32);\n"
+  "  .bss: {\n"
+  "    *(.bss BSS bss)\n"
+  "    *(COMMON)\n"
+  "    _BSS_END = ALIGN(32);\n"
+  "  }\n"
+  "}\n";
+
+struct FFFuncs fff_jagsrv = {
+  "jagsrv",
+  jaguarscript,
+  NULL,
+  NULL,
+  NULL,
+  jagsrv_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  jagsrv_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _BIG_ENDIAN_,
+  32,1,
+  0
+};
+#endif
+
+#ifdef ORICMC
+struct FFFuncs fff_oricmc = {
+  "oricmc",
+  defaultscript,
+  NULL,
+  NULL,
+  oric_options,
+  oric_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  oric_write,
+  NULL,NULL,
+  0,
+  0,
+  0,
+  0,
+  RTAB_UNDEF,0,
+  _LITTLE_ENDIAN_,
+  16,0,
+  FFF_SECTOUT
+};
+#endif
+
+#ifdef SINCQL
+struct FFFuncs fff_sincql = {
+  "sinclairql",
+  defaultscript,
+  NULL,
+  NULL,
+  sincql_options,
+  sincql_headersize,
+  rawbin_identify,
+  rawbin_readconv,
+  NULL,
+  rawbin_targetlink,
+  NULL,
+  NULL,
+  NULL,
+  NULL,NULL,NULL,
+  rawbin_writeobject,
+  rawbin_writeshared,
+  sincql_write,
+  NULL,NULL,
+  0,
+  0x7ffe,
+  0,
+  0,
+  RTAB_STANDARD,RTAB_STANDARD,
+  _BIG_ENDIAN_,
+  32,1,
+  FFF_BASEINCR|FFF_KEEPRELOCS
+};
+#endif
 #ifdef SREC19
 struct FFFuncs fff_srec19 = {
   "srec19",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -228,8 +601,10 @@ struct FFFuncs fff_srec19 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1, /* endianness undefined, only write */
+  16,
+  0,  /* ptr-alignment unknown */
+  FFF_NOFILE
 };
 #endif
 
@@ -237,6 +612,8 @@ struct FFFuncs fff_srec19 = {
 struct FFFuncs fff_srec28 = {
   "srec28",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -256,8 +633,10 @@ struct FFFuncs fff_srec28 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1, /* endianness undefined, only write */
+  32, /* 24 */
+  0,  /* ptr-alignment unknown */
+  FFF_NOFILE
 };
 #endif
 
@@ -265,6 +644,8 @@ struct FFFuncs fff_srec28 = {
 struct FFFuncs fff_srec37 = {
   "srec37",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -284,8 +665,10 @@ struct FFFuncs fff_srec37 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1, /* endianness undefined, only write */
+  32,
+  0,  /* ptr-alignment unknown */
+  FFF_NOFILE
 };
 #endif
 
@@ -293,6 +676,8 @@ struct FFFuncs fff_srec37 = {
 struct FFFuncs fff_ihex = {
   "ihex",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -312,8 +697,10 @@ struct FFFuncs fff_ihex = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1, /* endianness undefined, only write */
+  0,  /* addr_bits from input */
+  0,  /* ptr-alignment unknown */
+  FFF_NOFILE
 };
 #endif
 
@@ -321,6 +708,8 @@ struct FFFuncs fff_ihex = {
 struct FFFuncs fff_shex1 = {
   "oilhex",
   defaultscript,
+  NULL,
+  NULL,
   NULL,
   rawbin_headersize,
   rawbin_identify,
@@ -340,22 +729,53 @@ struct FFFuncs fff_shex1 = {
   0,
   0,
   RTAB_UNDEF,0,
-  -1, /* endianess undefined, only write */
-  32
+  -1, /* endianness undefined, only write */
+  32,
+  0,  /* ptr-alignment unknown */
+  FFF_NOFILE
 };
 #endif
 
 
-/*****************************************************************/
-/*                        Read Binary                            */
-/*****************************************************************/
+#ifdef ORICMC
+static int oric_options(struct GlobalVars *gv,
+                        int argc,const char **argv,int *i)
+{
+  if (!strcmp(argv[*i],"-autox"))
+    autoexec = 1;
+  else
+    return 0;
+  return 1;
+}
+#endif
+
+#ifdef SINCQL
+static int sincqlhdr = HDR_QDOS;
+
+static int sincql_options(struct GlobalVars *gv,
+                          int argc,const char **argv,int *i)
+{
+  long long val;
+
+  if (!strcmp(argv[*i],"-qhdr"))
+    sincqlhdr = HDR_QDOS;
+  else if (!strcmp(argv[*i],"-xtcc"))
+    sincqlhdr = HDR_XTCC;
+  else if (!strncmp(argv[*i],"-stack=",7)) {
+    if (sscanf(&argv[*i][7],"%lli",&val) == 1)
+      stacksize = val;
+  }
+  else
+    return 0;
+  return 1;
+}
+#endif
 
 
 static unsigned long rawbin_headersize(struct GlobalVars *gv)
 {
   return 0;  /* no header - it's pure binary! */
 }
-
 
 #ifdef AMSDOS
 static unsigned long amsdos_headersize(struct GlobalVars *gv)
@@ -364,6 +784,19 @@ static unsigned long amsdos_headersize(struct GlobalVars *gv)
 }
 #endif
 
+#ifdef APPLEBIN
+static unsigned long applebin_headersize(struct GlobalVars *gv)
+{
+  return 4;
+}
+#endif
+
+#ifdef ATARICOM
+static unsigned long ataricom_headersize(struct GlobalVars *gv)
+{
+  return 2;  /* followed by 4 bytes segment header */
+}
+#endif
 
 #ifdef CBMPRG
 static unsigned long cbmprg_headersize(struct GlobalVars *gv)
@@ -372,8 +805,52 @@ static unsigned long cbmprg_headersize(struct GlobalVars *gv)
 }
 #endif
 
+#ifdef COCOML
+static unsigned long cocoml_headersize(struct GlobalVars *gv)
+{
+  return 0;
+}
+#endif
 
-static int rawbin_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+#ifdef DRAGONBIN
+static unsigned long dragonbin_headersize(struct GlobalVars *gv)
+{
+  return 9;
+}
+#endif
+
+#ifdef ORICMC
+static unsigned long oric_headersize(struct GlobalVars *gv)
+{
+  return 14+strlen(gv->dest_name)+1;
+}
+#endif
+
+
+#ifdef JAGSRV
+static unsigned long jagsrv_headersize(struct GlobalVars *gv)
+{
+  return TOSHDR_SIZE+JAGR_SIZE;  /* uses TOS-executable header */
+}
+#endif
+
+#ifdef SINCQL
+static unsigned long sincql_headersize(struct GlobalVars *gv)
+{
+  if (sincqlhdr == HDR_QDOS)
+    return QDOSHDR_SIZE;
+  return 0;
+}
+#endif
+
+
+/*****************************************************************/
+/*                        Read Binary                            */
+/*****************************************************************/
+
+
+static int rawbin_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                           unsigned long plen,bool lib)
 /* identify a binary file */
 {
   return ID_UNKNOWN;  /* binaries are only allowed to be written! */
@@ -402,31 +879,50 @@ static int rawbin_targetlink(struct GlobalVars *gv,struct LinkedSection *ls,
 /*                        Write Binary                           */
 /*****************************************************************/
 
-static struct LinkedSection *get_next_section(struct GlobalVars *gv)
-/* returns pointer to next section with lowest base address */
-{
-  struct LinkedSection *ls = (struct LinkedSection *)gv->lnksec.first;
-  struct LinkedSection *nextls,*minls = NULL;
 
-  while (nextls = (struct LinkedSection *)ls->n.next) {
-    if (minls) {
-      if (ls->copybase < minls->copybase)
-        minls = ls;
-    }
-    else
-      minls = ls;
-    ls = nextls;
+static FILE *open_ascfile(struct GlobalVars *gv)
+{
+  FILE *f;
+
+  if ((f = fopen(gv->dest_name,"w")) == NULL) {
+    error(29,gv->dest_name);  /* Can't create output file */
+    return NULL;
   }
-  if (minls) {
-    remnode(&minls->n);
+  untrim_sections(gv);  /* always output trailing 0-bytes in ASCII hex-files */
+  return f;
+}
+
+
+static void savehdroffs(struct GlobalVars *gv,FILE *f,
+                        size_t bytes,struct LinkedSection *ls)
+{
+  /* remember location in file header and skip it */
+  hdrsect = ls;
+  hdrfile = f;
+  hdroffs = ftell(f);
+  fwritegap(gv,f,bytes);
+}
+
+
+static int rewindtohdr(FILE *f)
+{
+  if (hdrfile == f) {
+    fseek(f,hdroffs,SEEK_SET);
+    return 1;
   }
-  return minls;
+  return 0;
+}
+
+
+static void even_padding(FILE *f)
+{
+  if (ftell(f) & 1)
+    fwrite8(f,0);  /* make file size even */
 }
 
 
 #ifdef AMSDOS
-static void amsdos_header(FILE *f,uint16_t loadaddr,uint16_t execaddr,
-                          unsigned size)
+static void amsdos_header(FILE *f,uint16_t loadaddr,unsigned size)
 {
   uint8_t buffer[128];
   uint16_t checksum;
@@ -449,71 +945,230 @@ static void amsdos_header(FILE *f,uint16_t loadaddr,uint16_t execaddr,
 #endif
 
 
-static void rawbin_writeheader(struct GlobalVars *gv,FILE *f,
-                               struct LinkedSection *ls,char header)
+#ifdef JAGSRV
+static void jagsrv_header(FILE *f,uint32_t loadaddr,unsigned size)
 {
-  /* write a header, when needed */
+  uint8_t header[TOSHDR_SIZE+JAGR_SIZE];
+
+  memset(header,0,TOSHDR_SIZE+JAGR_SIZE);
+  write16be(&header[0],0x601a);
+  write32be(&header[2],size+JAGR_SIZE);
+
+  memcpy(&header[TOSHDR_SIZE+0],"JAGR",4);
+  write16be(&header[TOSHDR_SIZE+4],3);  /* command 3: Load & Run */
+  write32be(&header[TOSHDR_SIZE+6],loadaddr);
+  write32be(&header[TOSHDR_SIZE+10],size);
+  write32be(&header[TOSHDR_SIZE+14],execaddr);
+  fwritex(f,header,TOSHDR_SIZE+JAGR_SIZE);
+}
+#endif
+
+
+static int rawbin_segheader(struct GlobalVars *gv,FILE *f,
+                            struct LinkedSection *ls,int header)
+{
+  /* write a segment/section header, when needed */
+#ifdef ATARICOM
+  if (header == HDR_ATARICOM) {  /* Atari COM section header */
+    fwrite16le(f,ls->copybase);
+    fwrite16le(f,ls->copybase+ls->size-1);
+    return 1;
+  }
+#endif
+#ifdef COCOML
+  if (header == HDR_COCOML) {  /* Tandy Color Computer segment header */
+    fwrite8(f,0);
+    fwrite16be(f,ls->size);
+    fwrite16be(f,ls->copybase);
+    return 1;
+  }
+#endif
+  return 0;
+}
+
+
+static void rawbin_fileheader(struct GlobalVars *gv,FILE *f,
+                              struct LinkedSection *ls,int header)
+{
+  /* write a file header, when needed */
 #ifdef AMSDOS
-  if (header == 'a')  /* Amstrad/Schneider CPC */
-    amsdos_header(f,ls->copybase,entry_address(gv),ls->filesize);
+  if (header == HDR_AMSDOS)  /* Amstrad/Schneider CPC */
+    amsdos_header(f,ls->copybase,ls->size);
+#endif
+#ifdef APPLEBIN
+  if (header == HDR_APPLEBIN) {  /* Apple DOS binary file header */
+    fwrite16le(f,ls->copybase);
+    savehdroffs(gv,f,2,ls);      /* insert file length later */
+  }
+#endif
+#ifdef ATARICOM
+  if (header == HDR_ATARICOM)  /* Atari COM file header */
+    fwrite16le(f,0xffff);
+#endif
+#ifdef BBC
+  if (header == HDR_BBC) { /* BBC info file */
+    FILE *inf;
+    char *name;
+    name = alloc(strlen(gv->dest_name)+6);
+    sprintf(name,"%s.inf",gv->dest_name);
+    if (!(inf = fopen(name,"w"))) {
+      error(29,name);
+    }else{
+      fprintf(inf,"$.%s FF%04X FF%04X\n",gv->dest_name,(unsigned int)entry_address(gv),(unsigned int)entry_address(gv));
+      fclose(inf);
+    }
+    free(name);
+  }
 #endif
 #ifdef CBMPRG
-  if (header == 'c')  /* Commodore PET, VIC-20, 64, etc. */
-    fwrite16le(f,ls->copybase);
+  if (header == HDR_CBMPRG) {  /* Commodore PET, VIC-20, 64, etc. */
+    static int done;
+    if (!done)
+      fwrite16le(f,ls->copybase);
+    done = 1;
+  }
+#endif
+#ifdef DRAGONBIN
+  if (header == HDR_DRAGONBIN) {  /* Dragon DOS file header */
+    fwrite16be(f,0x5502);
+    fwrite16be(f,ls->copybase);
+    savehdroffs(gv,f,2,ls);       /* insert file length later */
+    fwrite16be(f,execaddr?(uint16_t)execaddr:ls->copybase);
+    fwrite8(f,0xaa);
+  }
+#endif
+#ifdef ORICMC
+  if (header == HDR_ORICMC) {  /* Oric machine code file header */
+    static const uint8_t hdr[] = {
+      0x16,0x16,0x16,0x16,0x24,0,0x80
+    };
+    fwritex(f,hdr,sizeof(hdr));
+    fwrite8(f,autoexec?0xc7:0);
+    savehdroffs(gv,f,2,ls);    /* insert last address later */
+    fwrite16be(f,ls->copybase);
+    fwrite8(f,0);
+    fwritex(f,gv->dest_name,strlen(gv->dest_name)+1);
+  }
+#endif
+#ifdef JAGSRV
+  if (header == HDR_JAGSRV) {  /* Atari Jaguar, JAGSRV header for SkunkBoard */
+    struct LinkedSection *finls = (struct LinkedSection *)gv->lnksec.last;
+    jagsrv_header(f,ls->copybase,
+                  (finls->copybase+finls->filesize)-ls->copybase);
+  }
+#endif
+#ifdef SINCQL
+  if (header == HDR_QDOS) {
+    static const uint8_t hdr[QDOSHDR_SIZE-8] = {
+      ']','!','Q','D','O','S',' ','F','i','l','e',' ','H','e','a','d','e','r',
+      0,0xf,0,1
+    };
+    fwritex(f,hdr,sizeof(hdr));
+    savehdroffs(gv,f,8,ls);  /* insert dataspace size here */
+  }    
+#endif
+
+  /* followed by optional section/segment header */
+  rawbin_segheader(gv,f,ls,header);
+}
+
+
+static void rawbin_trailer(struct GlobalVars *gv,FILE *f,
+                           struct LinkedSection *ls,int header)
+{
+  /* write a file trailer or patch the header, when needed */
+#ifdef APPLEBIN
+  if (header == HDR_APPLEBIN && rewindtohdr(f))
+    fwrite16le(f,ls->copybase+ls->size-hdrsect->copybase);
+#endif
+#ifdef COCOML
+  if (header == HDR_COCOML) {
+    fwrite8(f,0xff);
+    fwrite16be(f,0);
+    fwrite16be(f,execaddr);
+  }
+#endif
+#ifdef DRAGONBIN
+  if (header == HDR_DRAGONBIN && rewindtohdr(f))
+    fwrite16be(f,ls->copybase+ls->size-hdrsect->copybase);
+#endif
+#ifdef ORICMC
+  if (header == HDR_ORICMC && rewindtohdr(f))
+    fwrite16be(f,ls->copybase+ls->size-1);
+#endif
+#ifdef SINCQL
+  if (header == HDR_XTCC) {
+    even_padding(f);  /* align to even address */
+    fwrite32be(f,0x58546363);  /* XTcc ID */
+  }
+  if (header==HDR_XTCC || (header == HDR_QDOS && rewindtohdr(f))) {
+    fwrite32be(f,(uint32_t)(relocsize+64>udatasize+stacksize?
+                            ((relocsize+65)&~1):udatasize+stacksize));
+  }
 #endif
 }
 
 
 static void rawbin_writeexec(struct GlobalVars *gv,FILE *f,bool singlefile,
-                             char header)
+                             int header)
 /* creates executable raw-binary files (with absolute addresses) */
 {
+  const char *fn = "rawbin_writeexec(): ";
+  bool dorelocs = gv->keep_relocs && (fff[gv->dest_format]->flags & FFF_KEEPRELOCS);
   FILE *firstfile = f;
   bool firstsec = TRUE;
-  unsigned long addr;
+  unsigned long addr,baseaddr;
   struct LinkedSection *ls,*prevls;
+  struct BinReloc *brp,*brlist=NULL;
+  size_t brcnt = 0;
   char *name;
 
-  while (ls = get_next_section(gv)) {
-    if (ls->size==0 || !(ls->flags & SF_ALLOC) || (ls->ld_flags & LSF_NOLOAD))
-      continue;  /* ignore empty sections */
+  /* determine program's execution address */
+  execaddr = entry_address(gv);
 
-    /* resolve all relocations */
-    calc_relocs(gv,ls);
+  /* section loop */
+  while (ls = load_next_section(gv)) {
+    if (ls->ld_flags & LSF_NOLOAD)
+      continue;  /* do not output no-load sections */
 
     if (gv->output_sections) {
-      /* make a new file for each output section */
-      if (gv->trace_file)
-        fprintf(gv->trace_file,"Base address section %s = 0x%08lx.\n",
-                ls->name,ls->copybase);
-      if (f != NULL)
-        fclose(f);
-      if (gv->osec_base_name != NULL) {
-        /* use a common base name before the section name */
-        name = alloc(strlen(gv->osec_base_name)+strlen(ls->name)+2);
-        sprintf(name,"%s.%s",gv->osec_base_name,ls->name);
+      if (ls->size != 0) {
+        /* make a new file for each output section */
+        if (gv->trace_file)
+          fprintf(gv->trace_file,"Base address section %s = 0x%08lx.\n",
+                  ls->name,ls->copybase);
+        if (f != NULL)
+          ierror("%sopen file with output_sections",fn);
+        if (gv->osec_base_name != NULL) {
+          /* use a common base name before the section name */
+          name = alloc(strlen(gv->osec_base_name)+strlen(ls->name)+2);
+          sprintf(name,"%s.%s",gv->osec_base_name,ls->name);
+        }
+        else
+          name = (char *)ls->name;
+        if (!(f = fopen(name,"wb"))) {
+          error(29,name);
+          break;
+        }
+        if (gv->osec_base_name != NULL)
+          free(name);
+        rawbin_fileheader(gv,f,ls,header);
       }
-      else
-        name = (char *)ls->name;
-      if (!(f = fopen(name,"wb"))) {
-        error(29,name);
-        break;
-      }
-      if (gv->osec_base_name != NULL)
-        free(name);
-      rawbin_writeheader(gv,f,ls,header);
     }
     else if (firstsec) {
+      /* write an optional header before the first section */
+      baseaddr = ls->copybase;
       if (gv->trace_file)
         fprintf(gv->trace_file,"Base address = 0x%08lx.\n",ls->copybase);
       firstsec = FALSE;
-      rawbin_writeheader(gv,f,ls,header);
+      rawbin_fileheader(gv,f,ls,header);
     }
     else {
       /* handle gaps between this and the previous section */
       if (ls->copybase > addr) {
         if (ls->copybase-addr < MAXGAP || singlefile) {
-          fwritegap(f,ls->copybase-addr);
+          if (!rawbin_segheader(gv,f,ls,header))
+            fwritegap(gv,f,ls->copybase-addr);
         }
         else {  /* open a new file for this section */
           if (f != firstfile)
@@ -525,21 +1180,120 @@ static void rawbin_writeexec(struct GlobalVars *gv,FILE *f,bool singlefile,
             break;
           }
           free(name);
-          rawbin_writeheader(gv,f,ls,header);
+          rawbin_fileheader(gv,f,ls,header);
         }
       }
       else if (ls->copybase < addr)
         error(98,fff[gv->dest_format]->tname,ls->name,prevls->name);
+      else  /* next section attaches exactly */
+        rawbin_segheader(gv,f,ls,header);
     }
 
-    /* write section contents */
-    fwritex(f,ls->data,ls->filesize);
-    if (ls->filesize < ls->size)
-      fwritegap(f,ls->size - ls->filesize);
+    /* handle relocations */
+    if (dorelocs) {
+      /* remember relocations, with offsets from program's base address */
+      struct Reloc *r;
+      struct RelocInsert *ri;
+      struct LinkedSection *relsec;
+      struct BinReloc *newbr;
+      lword v;
 
-    addr = ls->copybase + ls->size;
+      sort_relocs(&ls->relocs);
+      for (r=(struct Reloc *)ls->relocs.first;
+           r->n.next!=NULL; r=(struct Reloc *)r->n.next) {
+        if (ri = r->insert) {
+          if (r->rtype!=R_ABS || ri->bpos!=0 || ri->bsiz!=gv->bits_per_taddr)
+            continue;
+        }
+        else
+          continue;
+        if ((relsec = r->relocsect.lnk) == NULL)
+          continue;
+
+        /* use offset from program's base address for the relocation */
+        v = writesection(gv,ls->data,r->offset,r,
+                         r->addend+(relsec->copybase-baseaddr));
+        if (v != 0) {
+          /* Calculated value doesn't fit into relocation type x ... */
+          if (ri = r->insert) {
+            struct Section *isec;
+            unsigned long ioffs;
+
+            isec = getinpsecoffs(ls,r->offset,&ioffs);
+            /*print_function_name(isec,ioffs);*/
+            error(35,gv->dest_name,ls->name,r->offset,getobjname(isec->obj),
+                  isec->name,ioffs,v,reloc_name[r->rtype],
+                  (int)ri->bpos,(int)ri->bsiz,(unsigned long long)ri->mask);
+          }
+          else
+            ierror("%sReloc (%s+%lx), type=%s, without RelocInsert",
+                    fn,ls->name,r->offset,reloc_name[r->rtype]);
+        }
+
+        /* remember relocation offsets for later */
+        newbr = alloc(sizeof(struct BinReloc));
+        newbr->next = NULL;
+        newbr->offset = (ls->copybase - baseaddr) + r->offset;
+        if (brp = brlist) {
+          while (brp->next)
+            brp = brp->next;
+          brp->next = newbr;
+        }
+        else
+          brlist = newbr;
+        brcnt++;
+        r->rtype = R_NONE;  /* disable it for calc_relocs() */
+      }
+    }
+
+    addr = ls->copybase;
+
+    if (ls->flags & SF_ALLOC) {
+      /* resolve all (remaining) relocations */
+      calc_relocs(gv,ls);
+
+      /* write section contents */
+      fwritefullsect(gv,f,ls);
+      addr += ls->size;
+    }
+
     prevls = ls;
   }
+
+  /* write optional relocation table after all sections */
+  if (dorelocs) {
+    long szoffs = ftell(f);
+    fwritetaddr(gv,f,0);  /* table's size in tbytes, excluding this word */
+
+    if (brlist) {
+      lword lastoffs,diff,limit;
+
+      limit = (1 << gv->bits_per_tbyte) - 1;
+      for (brp=brlist,lastoffs=0; brp; brp=brp->next) {
+        diff = brp->offset - lastoffs;
+        if (diff < 0) {
+          ierror("%snegative reloc offset diff %ld\n",fn,(long)diff);
+        }
+        else if (diff > limit) {
+          fwritetbyte(gv,f,0);    /* 0 indicates an address-size difference */
+          fwritetaddr(gv,f,diff); /* ...in the next word */
+          relocsize += gv->tbytes_per_taddr;
+        }
+        else
+          fwritetbyte(gv,f,diff);
+        relocsize++;
+        lastoffs = brp->offset;
+      }
+
+      /* now we can write the reloc table's size */
+      fseek(f,szoffs,SEEK_SET);
+      fwritetaddr(gv,f,(lword)relocsize);
+      fseek(f,0,SEEK_END);
+    }
+  }
+
+  /* write optional trailer */
+  rawbin_trailer(gv,f,prevls,header);
 
   if (f!=NULL && f!=firstfile)
     fclose(f);
@@ -563,17 +1317,17 @@ static void rawbin_writesingle(struct GlobalVars *gv,FILE *f)
 /* creates a single raw-binary file, fill gaps between */
 /* sections with zero */
 {
-  rawbin_writeexec(gv,f,TRUE,0);
+  rawbin_writeexec(gv,f,TRUE,HDR_NONE);
 }
 #endif
 
 
 #ifdef RAWBIN2
 static void rawbin_writemultiple(struct GlobalVars *gv,FILE *f)
-/* creates raw-binary which might get splitted over several */
+/* creates raw-binary which might get split over several */
 /* files, because of different section base addresses */
 {
-  rawbin_writeexec(gv,f,FALSE,0);
+  rawbin_writeexec(gv,f,FALSE,HDR_NONE);
 }
 #endif
 
@@ -583,20 +1337,119 @@ static void amsdos_write(struct GlobalVars *gv,FILE *f)
 /* creates one or more raw-binary files with an AMSDOS header, suitable */
 /* for loading as an executable on Amstrad/Scheider CPC computers */
 {
-  rawbin_writeexec(gv,f,FALSE,'a');
+  rawbin_writeexec(gv,f,FALSE,HDR_AMSDOS);
+}
+#endif
+
+
+#ifdef APPLEBIN
+static void applebin_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with an Apple DOS binary header, suitable */
+/* for loading as an executable on Apple II computers */
+{
+  rawbin_writeexec(gv,f,TRUE,HDR_APPLEBIN);
+}
+#endif
+
+
+#ifdef ATARICOM
+static void ataricom_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with an ATARI COM file header, suitable */
+/* for loading as an executable on Atari 8-bit computers */
+{
+  rawbin_writeexec(gv,f,TRUE,HDR_ATARICOM);
 }
 #endif
 
 
 #ifdef CBMPRG
 static void cbmprg_write(struct GlobalVars *gv,FILE *f)
-/* creates one or more raw-binary files with a Commodore header, suitable */
+/* creates a raw-binary file with a Commodore header, suitable */
 /* for loading as an executable on PET, VIC-20, 64, etc. computers */
 {
-  rawbin_writeexec(gv,f,FALSE,'c');
+  rawbin_writeexec(gv,f,TRUE,HDR_CBMPRG);
+}
+
+static void cbmreu_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with a Commodore header, followed by */
+/* a REU image. */
+{
+  rawbin_writeexec(gv,f,FALSE,HDR_CBMPRG);
 }
 #endif
 
+
+#ifdef COCOML
+static void cocoml_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with CoCo segment headers and trailer, suitable */
+/* for loading as a machine language file on Tandy Color Computer 1,2,3 */
+{
+  rawbin_writeexec(gv,f,TRUE,HDR_COCOML);
+}
+#endif
+
+
+#ifdef DRAGONBIN
+static void dragonbin_write(struct GlobalVars *gv,FILE *f)
+{
+/* creates a raw-binary file with a Dragon DOS file header, suitable */
+/* for loading as an executable on Dragon 32 and 64 computers */
+  rawbin_writeexec(gv,f,TRUE,HDR_DRAGONBIN);
+}
+#endif
+
+
+#ifdef ORICMC
+static void oric_write(struct GlobalVars *gv,FILE *f)
+{
+/* creates a raw-binary file with an Oric machine code file header, */
+/* suitable for loading as an executable on Oric-1/Atmos/Telestrat computers */
+  rawbin_writeexec(gv,f,TRUE,HDR_ORICMC);
+}
+#endif
+
+
+#ifdef JAGSRV
+static void jagsrv_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with a JAGSRV header, suitable */
+/* for loading and executing on a SkunkBoard equipped Atari Jaguar, or */
+/* a VirtualJaguar emulator */
+{
+  rawbin_writeexec(gv,f,TRUE,HDR_JAGSRV);
+}
+#endif
+
+#ifdef BBC
+static void bbc_write(struct GlobalVars *gv,FILE *f)
+/* creates a single raw-binary file plus a bbc info file */
+{
+  rawbin_writeexec(gv,f,TRUE,HDR_BBC);
+}
+#endif
+
+#ifdef SINCQL
+static void sincql_write(struct GlobalVars *gv,FILE *f)
+/* creates a raw-binary file with a QDOS file header or XTcc trailer,
+   suitable for Sinclair QL emulators */
+{
+  struct LinkedSection *ls;
+
+  for (ls=(struct LinkedSection *)gv->lnksec.first,udatasize=0;
+       ls->n.next!=NULL; ls=(struct LinkedSection *)ls->n.next) {
+    if (ls->flags & SF_ALLOC) {
+      if (ls->ld_flags & LSF_NOLOAD)
+        udatasize += ls->size;
+      else
+        udatasize = 0;  /* @@@ reset when interrupted by initialized data */
+    }
+  }
+  if (!stacksize)
+    stacksize = 4096;  /* default */
+  if ((udatasize + stacksize) & 1)
+    ++udatasize;  /* make sure bss-segment has an even number of bytes */
+  rawbin_writeexec(gv,f,TRUE,sincqlhdr);
+}
+#endif
 
 #if defined(SREC19) || defined(SREC28) || defined(SREC37)
 static void SRecOut(FILE *f,int stype,uint8_t *buf,int len)
@@ -619,13 +1472,19 @@ static void srec_write(struct GlobalVars *gv,FILE *f,int addrsize)
   unsigned long len,addr;
   uint8_t *p,buf[MAXSREC+8];
 
+  /* open ASCII output file */
+  if ((f = open_ascfile(gv)) == NULL)
+    return;
+
+  execaddr = entry_address(gv);  /* determine program's execution address */
+
   /* write header */
   buf[0] = buf[1] = 0;
   strncpy((char *)&buf[2],gv->dest_name,MAXSREC+6);
   SRecOut(f,0,buf,(strlen(gv->dest_name)<(MAXSREC+6)) ?
           strlen(gv->dest_name)+2 : MAXSREC+8);
 
-  while (ls = get_next_section(gv)) {
+  while (ls = load_next_section(gv)) {
     if (ls->size == 0 || !(ls->flags & SF_ALLOC) || (ls->ld_flags & LSF_NOLOAD))
       continue;  /* ignore empty sections */
 
@@ -671,8 +1530,9 @@ static void srec_write(struct GlobalVars *gv,FILE *f,int addrsize)
   }
 
   /* write trailer */
-  memset(buf,0,4);
-  SRecOut(f,11-addrsize,buf,addrsize);
+  write32be(buf,(uint32_t)execaddr);
+  SRecOut(f,11-addrsize,buf+4-addrsize,addrsize);
+  fclose(f);
 }
 
 #endif
@@ -736,7 +1596,11 @@ static void ihex_write(struct GlobalVars *gv,FILE *f)
   unsigned long len,addr;
   uint8_t *p;
 
-  while (ls = get_next_section(gv)) {
+  /* open ASCII output file */
+  if ((f = open_ascfile(gv)) == NULL)
+    return;
+
+  while (ls = load_next_section(gv)) {
     if (ls->size == 0 || !(ls->flags & SF_ALLOC) || (ls->ld_flags & LSF_NOLOAD))
       continue;  /* ignore empty sections */
 
@@ -762,6 +1626,7 @@ static void ihex_write(struct GlobalVars *gv,FILE *f)
   }
 
   fprintf(f,":00000001FF\n");
+  fclose(f);
 }
 #endif
 
@@ -791,7 +1656,11 @@ static void shex1_write(struct GlobalVars *gv,FILE *f)
   unsigned long len,addr;
   uint8_t *p;
 
-  while (ls = get_next_section(gv)) {
+  /* open ASCII output file */
+  if ((f = open_ascfile(gv)) == NULL)
+    return;
+
+  while (ls = load_next_section(gv)) {
     if (ls->size == 0 || !(ls->flags & SF_ALLOC) || (ls->ld_flags & LSF_NOLOAD))
       continue;  /* ignore empty sections */
 
@@ -814,6 +1683,7 @@ static void shex1_write(struct GlobalVars *gv,FILE *f)
     }
   }
   fprintf(f,"000000 0\n");
+  fclose(f);
 }
 #endif
 

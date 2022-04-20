@@ -3,14 +3,6 @@
  * This file is part of vlink, a portable linker for multiple
  * object formats.
  * Copyright (c) 1997-2010  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2010 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
  */
 
 #include "stabdefs.h"
@@ -184,7 +176,7 @@ void aout_header(FILE *,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,
                  uint32_t,uint32_t,uint32_t,uint32_t,int);
 uint32_t aout_getpagedsize(struct GlobalVars *,struct LinkedSection **,int);
 void aout_pagedsection(struct GlobalVars *,FILE *,struct LinkedSection **,int);
-void aout_writesection(FILE *,struct LinkedSection *,uint8_t);
+void aout_writesection(struct GlobalVars *gv,FILE *,struct LinkedSection *,uint8_t);
 void aout_writerelocs(FILE *,struct list *);
 void aout_writesymbols(FILE *);
 void aout_writestrings(FILE *,int);

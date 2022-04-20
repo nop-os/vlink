@@ -1,16 +1,8 @@
-/* $VER: vlink t_elf64.c V0.14 (29.07.11)
+/* $VER: vlink t_elf64.c V0.16f (05.08.20)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2011  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2011 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2020  Frank Wille
  */
 
 
@@ -25,12 +17,9 @@
 /* static data required for output file generation */
 static struct RelocList *reloclist;
 static struct Section *dynamic;
-/* .hash table */
-static struct SymbolNode **dyn_hash;
-static size_t dyn_hash_entries;
 /* stabs */
 static struct ShdrNode *stabshdr;
-static struct list stabcompunits;
+/*static struct list stabcompunits;*/
 static uint32_t stabdebugidx;
 
 
@@ -204,7 +193,7 @@ static void elf64_dynrefs(struct GlobalVars *gv,struct Elf64_Ehdr *ehdr,
     struct Elf64_Sym *sym = elf64_symtab(lf,ehdr,symndx) +
                             ELF64_R_SYM(read64(be,elfrel->r_info));
     uint32_t shndx = (uint32_t)read16(be,sym->st_shndx);
-    struct RelocInsert ri,*ri_ptr;
+    struct RelocInsert ri;
     uint8_t rtype;
 
     if (shndx == SHN_UNDEF || shndx == SHN_COMMON) {
@@ -215,8 +204,7 @@ static void elf64_dynrefs(struct GlobalVars *gv,struct Elf64_Ehdr *ehdr,
       r = newreloc(gv,sec,elf64_strtab(lf,ehdr,read32(be,symhdr->sh_link))
                    + read32(be,sym->st_name),
                    NULL,0,(unsigned long)read64(be,elfrel->r_offset),rtype,0);
-      for (ri_ptr=&ri; ri_ptr; ri_ptr=ri_ptr->next)
-        addreloc(sec,r,ri_ptr->bpos,ri_ptr->bsiz,ri_ptr->mask);
+      addreloc_ri(sec,r,&ri);
 
       /* referenced symbol is weak? */
       if (ELF64_ST_BIND(*sym->st_info)==STB_WEAK)
@@ -268,7 +256,7 @@ static void elf64_reloc(struct GlobalVars *gv,struct Elf64_Ehdr *ehdr,
     char *xrefname = NULL;
     struct Section *relsec=NULL;
     struct Reloc *r;
-    struct RelocInsert ri,*ri_ptr;
+    struct RelocInsert ri;
     lword a;
     uint8_t rtype;
 
@@ -281,10 +269,11 @@ static void elf64_reloc(struct GlobalVars *gv,struct Elf64_Ehdr *ehdr,
     if (is_rela)
       a = (lword)read64(be,elfrel->r_addend);
     else
-      a = readsection(gv,rtype,sec->data+offs,ri.bpos,ri.bsiz,ri.mask);
+      a = readsection(gv,rtype,sec->data,offs,&ri);
 
-    if (shndx == SHN_UNDEF || shndx == SHN_COMMON) {
-      /* undefined or common symbol - create external reference */
+    if (shndx == SHN_UNDEF || shndx == SHN_COMMON ||
+        ELF64_ST_BIND(*sym->st_info) == STB_WEAK) {
+      /* undefined, common or weak symbol - create external reference */
       xrefname = elf64_strtab(lf,ehdr,read32(be,symhdr->sh_link)) +
                               read32(be,sym->st_name);
       relsec = NULL;
@@ -307,16 +296,14 @@ static void elf64_reloc(struct GlobalVars *gv,struct Elf64_Ehdr *ehdr,
              ELF64_ST_TYPE(*sym->st_info));
 
     r = newreloc(gv,sec,xrefname,relsec,0,(unsigned long)offs,rtype,a);
-    for (ri_ptr=&ri; ri_ptr; ri_ptr=ri_ptr->next)
-      addreloc(sec,r,ri_ptr->bpos,ri_ptr->bsiz,ri_ptr->mask);
+    addreloc_ri(sec,r,&ri);
 
-    /* referenced symbol is weak? */
     if (xrefname!=NULL && ELF64_ST_BIND(*sym->st_info)==STB_WEAK)
-      r->flags |= RELF_WEAK;
+      r->flags |= RELF_WEAK;  /* referenced symbol is weak */
 
     /* make sure that section data reflects this addend for other formats */
     if (is_rela)
-      writesection(gv,sec->data+offs,r,a);
+      writesection(gv,sec->data,offs,r,a);
   }
 }
 
@@ -387,8 +374,10 @@ static void elf64_stabs(struct GlobalVars *gv,struct LinkFile *lf,
                 funsec = relsec;
                 funstart = val;
               }
+#if 0 /* @@@ N_FUN without a label in n_value seems legal? */
               else
                 ierror("%s: N_FUN without relocatable address",fn);
+#endif
             }
             else {  /* no name marks function end, still relative */
               relsec = funsec;
@@ -431,7 +420,7 @@ void elf64_parse(struct GlobalVars *gv,struct LinkFile *lf,
   struct ObjectUnit *u;
   struct Elf64_Shdr *shdr;
   uint16_t i,num_shdr,dynstr_idx,dynsym_idx;
-  char *shstrtab,*dynstrtab;
+  char *shstrtab;
   struct Elf64_Dyn *dyn;
 
   shstrtab = elf64_shstrtab(lf,ehdr);
@@ -489,7 +478,6 @@ void elf64_parse(struct GlobalVars *gv,struct LinkFile *lf,
 
 
     case ET_DYN:  /* shared object file */
-      dynstrtab = NULL;
       dyn = NULL;
       dynstr_idx = dynsym_idx = 0;
       num_shdr = read16(be,ehdr->e_shnum);
@@ -628,7 +616,7 @@ struct Symbol *elf64_pltgotentry(struct GlobalVars *gv,struct Section *sec,
                                  unsigned long offsadd,unsigned long sizeadd,
                                  int etype)
 /* Make a table entry for indirectly accessing a location from an external
-   symbol defintion (GOT_ENTRY/PLT_ENTRY) or a local relocation (GOT_LOCAL).
+   symbol definition (GOT_ENTRY/PLT_ENTRY) or a local relocation (GOT_LOCAL).
    The entry has a size of offsadd bytes, while the table section sec will
    become sizeadd bytes larger per entry. */
 {
@@ -660,7 +648,7 @@ void elf64_dynamicentry(struct GlobalVars *gv,uint64_t tag,uint64_t val,
    relsec in value-field, when nonzero */
 {
   if (dynamic) {
-    bool be = elf_endianess == _BIG_ENDIAN_;
+    bool be = elf_endianness == _BIG_ENDIAN_;
     struct Elf64_Dyn dyn;
     unsigned long offs = dynamic->size;
 
@@ -689,7 +677,7 @@ void elf64_dynamicentry(struct GlobalVars *gv,uint64_t tag,uint64_t val,
 static void elf64_makehash(struct GlobalVars *gv)
 /* Allocate and populate .hash section. */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
   size_t nsyms = elfdsymlist.nextindex;
   size_t nbuckets = elf_num_buckets(nsyms);
   struct Section *hashsec = find_sect_name(gv->dynobj,hash_name);
@@ -765,7 +753,7 @@ void elf64_dyncreate(struct GlobalVars *gv,const char *pltgot_name)
   elf64_dynamicentry(gv,DT_STRSZ,dynstr->size,NULL);
   elf64_dynamicentry(gv,DT_SYMENT,sizeof(struct Elf64_Sym),NULL);
   elf64_dynamicentry(gv,DT_DEBUG,0,NULL); /* needed? */
-  /* do we have a .plt or .got section (target dependant) */
+  /* do we have a .plt or .got section (target dependent) */
   if (pltgot = find_sect_name(gv->dynobj,pltgot_name)) {
     elf64_dynamicentry(gv,DT_PLTGOT,0,pltgot);    
   }
@@ -867,7 +855,7 @@ static struct ShdrNode *elf64_addshdr(uint32_t name,uint32_t type,
 static void elf64_writephdrs(struct GlobalVars *gv,FILE *f)
 /* write 32-bit ELF Program Header (PHDR) */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
   long gapsize = elf_file_hdr_gap;
   struct Elf64_Phdr phdr;
   struct Phdr *p;
@@ -889,7 +877,7 @@ static void elf64_writephdrs(struct GlobalVars *gv,FILE *f)
         gapsize += sizeof(struct Elf64_Phdr);
     }
   }
-  fwritegap(f,gapsize);  /* gap at the end, for unused PHDRs */
+  fwritegap(gv,f,gapsize);  /* gap at the end, for unused PHDRs */
 }
 
 
@@ -898,7 +886,7 @@ static void elf64_writeshdrs(struct GlobalVars *gv,FILE *f,
 /* write all section headers */
 {
   const char *fn = "elf64_writeshdrs():";
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
   struct LinkedSection *ls;
   struct ShdrNode *shn;
   uint32_t type;
@@ -996,7 +984,7 @@ static void elf64_sec2shdr(struct LinkedSection *ls,bool bss,uint64_t f)
 
   shn = elf64_addshdr(elf_addshdrstr(ls->name),type,f,ls->base,
                       (uint64_t)elfoffset,ls->size,0,info,1LL<<ls->alignment,
-                      (uint64_t)entsize,elf_endianess);
+                      (uint64_t)entsize,elf_endianness);
 
 
   if (stabdebugidx && !strcmp(ls->name,".stab"))
@@ -1008,7 +996,7 @@ static void elf64_addrelocs(struct GlobalVars *gv,
                             uint8_t (*reloc_vlink2elf)(struct Reloc *))
 /* creates relocations for all sections */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
   struct LinkedSection *ls;
   struct Reloc *rel;
   uint32_t sroffs=0,roffs=0;
@@ -1050,7 +1038,7 @@ static void elf64_addrelocs(struct GlobalVars *gv,
 static void elf64_makeshstrtab(void)
 /* creates .shstrtab */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
 
   elf64_addshdr(elfshstrtabidx,SHT_STRTAB,0,0,elfoffset,
                 elfshstrlist.nextindex,0,0,1,0,be);
@@ -1062,7 +1050,7 @@ static void elf64_makeshstrtab(void)
 static void elf64_makestrtab(void)
 /* creates .strtab */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
 
   elf64_addshdr(elfstrtabidx,SHT_STRTAB,0,0,elfoffset,
                 elfstringlist.nextindex,0,0,1,0,be);
@@ -1076,7 +1064,7 @@ void elf64_makestabstr(void)
 /* create .stabstr */
 {
   if (stabdebugidx) {
-    bool be = elf_endianess == _BIG_ENDIAN_;
+    bool be = elf_endianness == _BIG_ENDIAN_;
     uint32_t size = 0;
     struct StabCompUnit *cu;
 
@@ -1098,7 +1086,7 @@ void elf64_makestabstr(void)
 static void elf64_makesymtab(uint32_t strtabindex)
 /* creates .symtab */
 {
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
 
   elf64_addshdr(elfsymtabidx,SHT_SYMTAB,0,0,elfoffset,
                 elfsymlist.nextindex * sizeof(struct Elf64_Sym),
@@ -1134,7 +1122,8 @@ static size_t elf64_putdynreloc(struct GlobalVars *gv,struct LinkedSection *ls,
 
     if (ri = rel->insert)
       error(32,fff[gv->dest_format]->tname,reloc_name[rel->rtype],
-            (int)ri->bpos,(int)ri->bsiz,ri->mask,ls->name,rel->offset);
+            (int)ri->bpos,(int)ri->bsiz,(unsigned long long)ri->mask,
+            ls->name,rel->offset);
     else
       ierror("%s Reloc without insert-field",fn);
   }
@@ -1144,10 +1133,10 @@ static size_t elf64_putdynreloc(struct GlobalVars *gv,struct LinkedSection *ls,
 
   if (rela) {
     write64(be,rp->r_addend,rel->addend);
-    writesection(gv,ls->data+rel->offset,rel,0);
+    writesection(gv,ls->data,rel->offset,rel,0);
     return sizeof(struct Elf64_Rela);
   }
-  writesection(gv,ls->data+rel->offset,rel,rel->addend);
+  writesection(gv,ls->data,rel->offset,rel,rel->addend);
   return sizeof(struct Elf64_Rel);
 }
 
@@ -1157,7 +1146,7 @@ static void elf64_makedynamic(struct GlobalVars *gv,
 {
   if (gv->dynamic) {
     const char *fn = "elf64_makedynamic():";
-    bool be = elf_endianess == _BIG_ENDIAN_;
+    bool be = elf_endianness == _BIG_ENDIAN_;
     int rela = gv->reloctab_format==RTAB_ADDEND ? 1 : 0;
     struct LinkedSection *ls;
     uint8_t *dynp,*pltp;
@@ -1254,7 +1243,7 @@ static void elf64_makestabs(struct GlobalVars *gv)
 /* create .stab, .stabstr und .rela.stab sections from StabDebug records */
 {
   static const char *fn = "elf64_makestabs";
-  bool be = elf_endianess == _BIG_ENDIAN_;
+  bool be = elf_endianness == _BIG_ENDIAN_;
 
   stabdebugidx = 0;
   initlist(&stabcompunits);
@@ -1317,7 +1306,7 @@ static void elf64_makestabs(struct GlobalVars *gv)
           ierror("%s: .stab already in use",fn);
       }
       else
-        ls = create_lnksect(gv,".stab",ST_DATA,0,SP_READ,2);
+        ls = create_lnksect(gv,".stab",ST_DATA,0,SP_READ,2,0);
       ls->size = ls->filesize = stabsize;
       ls->data = (uint8_t *)nlst;
 
@@ -1388,11 +1377,11 @@ static void elf64_makestabs(struct GlobalVars *gv)
 
 
 static void elf64_initoutput(struct GlobalVars *gv,uint32_t init_file_offset,
-                             int8_t output_endianess)
+                             int8_t output_endianness)
 /* initialize section header, program header, relocation, symbol, */
 /* string and section header string lists */
 {
-  elf_initoutput(gv,init_file_offset,output_endianess);
+  elf_initoutput(gv,init_file_offset,output_endianness);
   elf_initsymtabs(sizeof(struct Elf64_Sym),elf64_initsym);
 
   reloclist = elf_newreloclist(sizeof(struct Elf64_Rela),
@@ -1435,11 +1424,11 @@ void elf64_writeobject(struct GlobalVars *gv,FILE *f,uint16_t m,int8_t endian,
   elf_writesections(gv,f);
   /*@@@ elf64_writestabstr(f);*/
   elf_writestrtab(f,&elfshstrlist);
-  fwrite_align(f,2,ftell(f));
+  fwrite_align(gv,f,2,ftell(f));
   elf64_writeshdrs(gv,f,elfoffset,stabndx);
   elf_writesymtab(f,&elfsymlist);
   elf_writestrtab(f,&elfstringlist);
-  fwrite_align(f,2,ftell(f));
+  fwrite_align(gv,f,2,ftell(f));
   elf_writerelocs(f,reloclist);
 }
 
@@ -1487,12 +1476,12 @@ void elf64_writeexec(struct GlobalVars *gv,FILE *f,uint16_t m,int8_t endian,
   elf_writesegments(gv,f);
   /*@@@ elf64_writestabstr(f);*/
   elf_writestrtab(f,&elfshstrlist);
-  fwrite_align(f,2,ftell(f));
+  fwrite_align(gv,f,2,ftell(f));
   elf64_writeshdrs(gv,f,elfoffset,stabndx);
   elf_writesymtab(f,&elfsymlist);
   elf_writestrtab(f,&elfstringlist);
   if (gv->keep_relocs) {
-    fwrite_align(f,2,ftell(f));
+    fwrite_align(gv,f,2,ftell(f));
     elf_writerelocs(f,reloclist);
   }
 }

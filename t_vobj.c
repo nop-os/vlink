@@ -1,16 +1,8 @@
-/* $VER: vlink t_vobj.c V0.14d (12.02.14)
+/* $VER: vlink t_vobj.c V0.16h (09.03.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2014  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2014 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2021 Frank Wille
  */
 
 #include "config.h"
@@ -73,8 +65,10 @@ special
 */
 
 static unsigned long vobj_headersize(struct GlobalVars *);
-static int vobjle_identify(char*,uint8_t *,unsigned long,bool);
-static int vobjbe_identify(char*,uint8_t *,unsigned long,bool);
+static int vobjle_identify(struct GlobalVars *,char *,uint8_t *,
+                           unsigned long,bool);
+static int vobjbe_identify(struct GlobalVars *,char *,uint8_t *,
+                           unsigned long,bool);
 static void vobj_readconv(struct GlobalVars *,struct LinkFile *);
 static int vobj_targetlink(struct GlobalVars *,struct LinkedSection *,
                               struct Section *);
@@ -85,6 +79,8 @@ static void vobj_writeexec(struct GlobalVars *,FILE *);
 
 struct FFFuncs fff_vobj_le = {
   "vobj-le",
+  NULL,
+  NULL,
   NULL,
   NULL,
   vobj_headersize,
@@ -106,11 +102,14 @@ struct FFFuncs fff_vobj_le = {
   0,
   RTAB_UNDEF,0,
   _LITTLE_ENDIAN_,
-  32
+  0,  /* defined by VOBJ bytespertaddr*bitsperbyte */
+  0   /* irrelevant - no output format */
 };
 
 struct FFFuncs fff_vobj_be = {
   "vobj-be",
+  NULL,
+  NULL,
   NULL,
   NULL,
   vobj_headersize,
@@ -132,7 +131,8 @@ struct FFFuncs fff_vobj_be = {
   0,
   RTAB_UNDEF,0,
   _BIG_ENDIAN_,
-  32
+  0,  /* defined by VOBJ bytespertaddr*bitsperbyte */
+  0   /* irrelevant - no output format */
 };
 
 
@@ -148,49 +148,6 @@ static uint8_t *p;
 static unsigned long vobj_headersize(struct GlobalVars *gv)
 {
   return 0;  /* irrelevant - no write format */
-}
-
-
-static int vobj_identify(char *name,uint8_t *p,unsigned long plen,uint8_t e)
-{
-  int id = ID_OBJECT;
-
-  if (ar_init(&ai,(char *)p,plen,name)) {
-    /* library archive detected, extract 1st archive member */
-    id = ID_LIBARCH;
-    if (!(ar_extract(&ai))) {
-      error(38,name);  /* empty archive ignored */
-      return ID_IGNORE;
-    }
-    p = (uint8_t *)ai.data;
-    plen = ai.size;
-  }
-
-  if (plen>4 && p[0]==0x56 && p[1]==0x4f && p[2]==0x42 &&
-      p[3]==0x4a && p[4]==e) {
-    return id;
-  }
-
-  return ID_UNKNOWN;
-}
-
-static int vobjle_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
-{
-  return vobj_identify(name,p,plen,2);
-}
-
-static int vobjbe_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
-{
-  return vobj_identify(name,p,plen,1);
-}
-
-
-static void vobj_check_ar_type(struct FFFuncs *ff,const char *name,uint8_t *p)
-/* check all library archive members before conversion */
-{
-  if (p[0]!=0x56 || p[1]!=0x4f || p[2]!=0x42 || p[3]!=0x4a ||
-      p[4]!=(ff->endianess ? 1 : 2))
-    error(41,name,ff->tname);
 }
 
 
@@ -225,6 +182,107 @@ static void skip_string(void)
 }
 
 
+static int vobj_identify(struct GlobalVars *gv,struct FFFuncs *fff,char *name,
+                         uint8_t *dat,unsigned long plen,uint8_t e)
+{
+  int id = ID_OBJECT;
+
+  if (ar_init(&ai,(char *)dat,plen,name)) {
+    /* library archive detected, extract 1st archive member */
+    id = ID_LIBARCH;
+    if (!(ar_extract(&ai))) {
+      error(38,name);  /* empty archive ignored */
+      return ID_IGNORE;
+    }
+    p = (uint8_t *)ai.data;
+    plen = ai.size;
+  }
+  else
+    p = dat;
+
+  if (plen>8 && p[0]==0x56 && p[1]==0x4f && p[2]==0x42 &&
+      p[3]==0x4a && p[4]==e) {
+    int bpt,bpb;
+
+    p += 5;
+    bpb = (int)read_number(0);  /* bits per byte */
+    if ((bpb & 7) != 0) {
+      /* bits per byte are not supported */
+      error(113,name,fff->tname,bpb);
+    }
+
+    if (gv->bits_per_tbyte == 0)
+      gv->bits_per_tbyte = bpb;
+    else if (gv->bits_per_tbyte != bpb)
+      error(146,name,fff->tname,(int)gv->bits_per_tbyte,bpb);
+
+    bpt = (int)read_number(0);  /* bytes per taddr */
+    if ((bpt*bpb+7)/8 > sizeof(taddr)) {
+      /* n bytes per target-address are not supported */
+      error(114,name,fff->tname,bpt);
+    }
+
+    if (gv->tbytes_per_taddr == 0)
+      gv->tbytes_per_taddr = bpt;
+    else if (gv->tbytes_per_taddr != bpt)
+      error(147,name,fff->tname,(int)gv->tbytes_per_taddr,bpt);
+
+    if (bpt * bpb > (int)gv->bits_per_taddr)
+      gv->bits_per_taddr = bpt * bpb;  /* set bits per taddr from this VOBJ */
+
+    return id;
+  }
+
+  return ID_UNKNOWN;
+}
+
+static int vobjle_identify(struct GlobalVars *gv,char *name,uint8_t *dat,
+                           unsigned long plen,bool lib)
+{
+  return vobj_identify(gv,&fff_vobj_le,name,dat,plen,2);
+}
+
+static int vobjbe_identify(struct GlobalVars *gv,char *name,uint8_t *dat,
+                           unsigned long plen,bool lib)
+{
+  return vobj_identify(gv,&fff_vobj_be,name,dat,plen,1);
+}
+
+
+static void vobj_check_ar_type(struct GlobalVars *gv,struct FFFuncs *ff,
+                               const char *name,uint8_t *dat)
+/* check all library archive members before conversion */
+{
+  int bpt,bpb;
+
+  p = dat;
+  if (p[0]==0x56 && p[1]==0x4f && p[2]==0x42 && p[3]==0x4a &&
+      p[4]==(ff->endianness ? 1 : 2)) {
+    p += 5;
+    bpb = (int)read_number(0);  /* bits per byte */
+    if ((bpb & 7) != 0) {
+      /* bits per byte are not supported */
+      error(113,name,ff->tname,bpb);
+    }
+    if (gv->bits_per_tbyte != bpb)
+      error(146,name,ff->tname,(int)gv->bits_per_tbyte,bpb);
+
+    bpt = (int)read_number(0);  /* bytes per taddr */
+    if ((bpt*bpb+7)/8 > sizeof(taddr)) {
+      /* n bytes per target-address are not supported */
+      error(114,name,ff->tname,bpt);
+    }
+    if (gv->tbytes_per_taddr != bpt)
+      error(147,name,ff->tname,(int)gv->tbytes_per_taddr,bpt);
+
+    if (bpt * bpb > (int)gv->bits_per_taddr)
+      gv->bits_per_taddr = bpt * bpb;  /* set bits per taddr from this VOBJ */
+  }
+  else
+    error(41,name,ff->tname);
+}
+
+
 static void read_symbol(struct vobj_symbol *vsym)
 {
   vsym->name = (char *)p;
@@ -252,14 +310,13 @@ static void read_section(struct GlobalVars *gv,struct ObjectUnit *u,
   struct Reloc *last_reloc;
   int last_sym = -1;
   lword last_offs;
-  uint16_t last_bpos = INVALID;
 
   skip_string();  /* section name */
   for (attr=(char *)p; *attr; attr++) {
     switch (tolower((unsigned char)*attr)) {
       case 'w': prot |= SP_WRITE; break;
-      case 'x': prot |= SP_EXEC; break;
-      case 'c': type = ST_CODE; break;
+      case 'x': type = ST_CODE; prot |= SP_EXEC; break;
+      case 'c': type = ST_CODE; prot |= SP_EXEC; break;
       case 'd': type = ST_DATA; break;
       case 'u': type = ST_UDATA; flags |= SF_UNINITIALIZED; break;
       case 'a': flags |= SF_ALLOC;
@@ -276,18 +333,18 @@ static void read_section(struct GlobalVars *gv,struct ObjectUnit *u,
     data = NULL;
   }
   else if (dsize > fsize) {       /* recreate 0-bytes at end of section */
-    data = alloczero((size_t)dsize);
-    memcpy(data,p,(size_t)fsize);
+    data = alloczero(tbytes(gv,dsize));
+    section_copy(gv,data,0,p,fsize);
   }
   else
     data = p;
 
   /* create and add section */
-  p += fsize;
+  p += tbytes(gv,fsize);
   s = add_section(u,name,data,(unsigned long)dsize,type,flags,prot,align,0);
   s->id = index;
 
-  /* create relocations and unkown symbol references for this section */
+  /* create relocations and unknown symbol references for this section */
   for (last_reloc=NULL,last_offs=-1; nrelocs>0; nrelocs--) {
     struct Reloc *r;
     char *xrefname = NULL;
@@ -309,25 +366,28 @@ static void read_section(struct GlobalVars *gv,struct ObjectUnit *u,
     if (type>R_NONE && type<=LAST_STANDARD_RELOC &&
         offs>=0 && bsiz<=(sizeof(lword)<<3) &&
         sym_idx>=0 && sym_idx<nsyms) {
-      if (vsyms[sym_idx].type == LABSYM) {
+      if (vsyms[sym_idx].flags & WEAK) {
+        xrefname = vsyms[sym_idx].name;
+        index = 0;
+        flags |= RELF_WEAK;
+      }
+      else if (vsyms[sym_idx].type == LABSYM) {
         xrefname = NULL;
         index = vsyms[sym_idx].sec;
       }
       else if (vsyms[sym_idx].type == IMPORT) {
         xrefname = vsyms[sym_idx].name;
-        if (vsyms[sym_idx].flags & WEAK)
-          flags |= RELF_WEAK;  /* undefined weak symbol */
         index = 0;
       }
       else {
         /* VOBJ relocation not supported */
         error(115,getobjname(u),fff[u->lnkfile->format]->tname,
-              (int)type,(lword)offs,(int)bpos,(int)bsiz,(lword)mask,
+              (int)type,(unsigned long long)offs,
+              (int)bpos,(int)bsiz,(unsigned long long)mask,
               vsyms[sym_idx].name,(int)vsyms[sym_idx].type);
       }
 
-      if (sym_idx==last_sym && offs==last_offs && bpos==last_bpos &&
-          last_reloc!=NULL) {
+      if (sym_idx==last_sym && offs==last_offs && last_reloc!=NULL) {
         r = last_reloc;
       }
       else {
@@ -335,20 +395,20 @@ static void read_section(struct GlobalVars *gv,struct ObjectUnit *u,
         r->flags |= flags;
         last_reloc = r;
         last_offs = offs;
-        last_bpos = bpos;
         last_sym = sym_idx;
       }
 
       addreloc(s,r,bpos,bsiz,mask);
 
       /* make sure that section reflects the addend for other formats */
-      writesection(gv,data+(uint32_t)offs,r,addend);
+      writesection(gv,data,offs,r,addend);
     }
 
     else if (type != R_NONE) {
       /* VOBJ relocation not supported */
       error(115,getobjname(u),fff[u->lnkfile->format]->tname,
-            (int)type,(lword)offs,(int)bpos,(int)bsiz,(lword)mask,
+            (int)type,(unsigned long long)offs,
+            (int)bpos,(int)bsiz,(unsigned long long)mask,
             (sym_idx>=0&&sym_idx<nsyms) ? vsyms[sym_idx].name : "?",
             (sym_idx>=0&&sym_idx<nsyms) ? (int)vsyms[sym_idx].type : 0);
     }
@@ -359,23 +419,18 @@ static void read_section(struct GlobalVars *gv,struct ObjectUnit *u,
 static void vobj_read(struct GlobalVars *gv,struct LinkFile *lf,uint8_t *data)
 {
   struct ObjectUnit *u;
-  int bpb,bpt,nsecs,nsyms,i;
+  int nsecs,nsyms,i;
   struct vobj_symbol *vsymbols = NULL;
 
   if (lf->type == ID_LIBARCH) {  /* check ar-member for correct format */
-    vobj_check_ar_type(fff[lf->format],lf->pathname,data);
+    vobj_check_ar_type(gv,fff[lf->format],lf->pathname,data);
   }
-  p = data + 5;  /* skip ID and endianess */
-  bpb = (int)read_number(0);  /* bits per byte */
-  if (bpb != 8) {
-    /* bits per byte are not supported */
-    error(113,lf->pathname,fff[lf->format]->tname,bpb);
-  }
-  bpt = (int)read_number(0);  /* bytes per taddr */
-  if (bpt > sizeof(taddr)) {
-    /* n bytes per target-address are not supported */
-    error(114,lf->pathname,fff[lf->format]->tname,bpt);
-  }
+  p = data + 5;  /* skip ID and endianness */
+
+  /* skip bits per byte and bytes per address */
+  read_number(0);
+  read_number(0);
+
   skip_string();  /* skip cpu-string */
 
   u = create_objunit(gv,lf,lf->objname);

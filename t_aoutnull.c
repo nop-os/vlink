@@ -3,14 +3,6 @@
  * This file is part of vlink, a portable linker for multiple
  * object formats.
  * Copyright (c) 1997-2010  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2010 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
  */
 
 #include "config.h"
@@ -57,11 +49,14 @@ static const char null_exe[] = {
 };
 
 
-static int aoutnull_identify(char *,uint8_t *,unsigned long,bool);
+static int aoutnull_identify(struct GlobalVars *,char *,uint8_t *,
+                             unsigned long,bool);
 
 struct FFFuncs fff_aoutnull = {
   "aoutnull",
   null_exe,
+  NULL,
+  NULL,
   NULL,
   aout_headersize,
   aoutnull_identify,
@@ -81,13 +76,14 @@ struct FFFuncs fff_aoutnull = {
   0,
   0,
   RTAB_STANDARD,RTAB_STANDARD,
-  -1,  /* endianess unknown */
-  32,
+  -1,    /* endianness unknown */
+  32,0,  /* @@@ standard a.out is always based on 32 bit addresses */
   FFF_BASEINCR
 };
 
 
-static int aoutnull_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int aoutnull_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                             unsigned long plen,bool lib)
 {
   return aout_identify(&fff_aoutnull,name,(struct aout_hdr *)p,plen);
 }

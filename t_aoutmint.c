@@ -1,16 +1,8 @@
-/* $VER: vlink t_aoutmint.c V0.14e (23.08.14)
+/* $VER: vlink t_aoutmint.c V0.16h (16.01.21)
  *
  * This file is part of vlink, a portable linker for multiple
  * object formats.
- * Copyright (c) 1997-2014  Frank Wille
- *
- * vlink is freeware and part of the portable and retargetable ANSI C
- * compiler vbcc, copyright (c) 1995-2014 by Volker Barthelmann.
- * vlink may be freely redistributed as long as no modifications are
- * made and nothing is charged for it. Non-commercial usage is allowed
- * without any restrictions.
- * EVERY PRODUCT OR PROGRAM DERIVED DIRECTLY FROM MY SOURCE MAY NOT BE
- * SOLD COMMERCIALLY WITHOUT PERMISSION FROM THE AUTHOR.
+ * Copyright (c) 1997-2014,2021  Frank Wille
  */
 
 #include "config.h"
@@ -54,7 +46,7 @@ static const char mint_script[] =
   "}\n";
 
 
-static int aoutmint_identify(char *,uint8_t *,unsigned long,bool);
+static int aoutmint_identify(struct GlobalVars *,char *,uint8_t *,unsigned long,bool);
 static void aoutmint_writeobject(struct GlobalVars *,FILE *);
 static void aoutmint_writeshared(struct GlobalVars *,FILE *);
 static void aoutmint_writeexec(struct GlobalVars *,FILE *);
@@ -63,6 +55,8 @@ struct FFFuncs fff_aoutmint = {
   "aoutmint",
   mint_script,
   NULL,
+  NULL,
+  tos_options,
   aout_headersize,
   aoutmint_identify,
   aoutstd_readconv,
@@ -82,7 +76,7 @@ struct FFFuncs fff_aoutmint = {
   0,  /* MiNT uses MID 0 */
   RTAB_STANDARD,RTAB_STANDARD,
   _BIG_ENDIAN_,
-  32,
+  32,1,
   FFF_BASEINCR
 };
 
@@ -102,7 +96,8 @@ static struct nlist32 *find_aout_sym(const char *name)
 }
 
 
-static int aoutmint_identify(char *name,uint8_t *p,unsigned long plen,bool lib)
+static int aoutmint_identify(struct GlobalVars *gv,char *name,uint8_t *p,
+                             unsigned long plen,bool lib)
 {
   return ID_UNKNOWN;  /* a.out-mint format is for executables only */
 }
@@ -147,7 +142,7 @@ static void aoutmint_writeexec(struct GlobalVars *gv,FILE *f)
   write32be(me.tos.ph_dlen,secsizes[1]);
   write32be(me.tos.ph_blen,secsizes[2]);
   write32be(me.tos.ph_magic,0x4d694e54);  /* "MiNT" */
-  write32be(me.tos.ph_flags,gv->tosflags);  /* Atari memory flags */
+  write32be(me.tos.ph_flags,tos_flags);   /* Atari memory flags */
   write16be(me.tos.ph_abs,0);  /* includes relocations */
 
   aout_addsymlist(gv,sections,BIND_GLOBAL,0,be);
@@ -185,10 +180,12 @@ static void aoutmint_writeexec(struct GlobalVars *gv,FILE *f)
 
   /* write sections */
   fwritex(f,sections[0]->data,sections[0]->filesize);
-  fwritegap(f,(sections[0]->size-sections[0]->filesize)+sections[0]->gapsize);
+  fwritegap(gv,f,
+            (sections[0]->size-sections[0]->filesize)+sections[0]->gapsize);
   if (sections[1]) {
     fwritex(f,sections[1]->data,sections[1]->filesize);
-    fwritegap(f,(sections[1]->size-sections[1]->filesize)+sections[1]->gapsize);
+    fwritegap(gv,f,
+              (sections[1]->size-sections[1]->filesize)+sections[1]->gapsize);
   }
 
   /* write a.out symbols */

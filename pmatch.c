@@ -9,63 +9,6 @@
 #define PMATCH_C
 #include "vlink.h"
 
-#ifdef AMIGAOS
-#pragma amiga-align
-#include <dos/dos.h>
-#include <proto/dos.h>
-#pragma default-align
-
-#elif defined(_WIN32) || defined(ATARI)
-/* portable pattern matching routines - no headers */
-
-#elif defined(_SGI_SOURCE)
-#include <libgen.h>
-
-#else /* UNIX */
-#include <fnmatch.h>
-#endif
-
-
-
-#ifdef AMIGAOS
-
-bool pattern_match(const char *pat,const char *str)
-{
-  char c;
-  char *pat1,*pat2;
-  LONG len;
-  bool rc = FALSE;
-
-  /* convert Unix to AmigaDos pattern */
-  pat2 = pat1 = alloc(2*strlen(pat)+1);
-  while (c = *pat++) {
-    if (c == '*') {
-      *pat2++ = '#';
-      *pat2++ = '?';
-    }
-    else
-      *pat2++ = c;
-  }
-  *pat2 = '\0';
-
-  /* tokenize pattern and match it against str */
-  len = 2*strlen(pat1)+3;
-  pat2 = alloc(len);
-  if (ParsePattern((STRPTR)pat1,(STRPTR)pat2,len) >= 0) {
-    if (MatchPattern((STRPTR)pat2,(STRPTR)str))
-      rc = TRUE;
-  }
-  else
-    ierror("pattern_match(): ParsePattern() failed for \"%s\"",pat);
-
-  free(pat2);
-  free(pat1);
-  return (rc);
-}
-
-
-#elif defined(_WIN32) || defined(ATARI)
-
 static bool portable_pattern_match(const char *mask, const char *name)
 {
   int           wild  = 0,
@@ -121,24 +64,11 @@ static bool portable_pattern_match(const char *mask, const char *name)
 
 bool pattern_match(const char *mask, const char *name)
 {
-  return !portable_pattern_match(mask,name);
+  printf("comparing '%s' with '%s'\n", name, mask);
+  bool result = !portable_pattern_match(mask,name);
+  if (result) printf("success!\n");
+  return result;
 }
-
-
-#else /* UNIX */
-
-bool pattern_match(const char *pat,const char *str)
-{
-#ifdef _SGI_SOURCE
-  return (gmatch(str,pat) != 0);
-#else
-  return (fnmatch(pat,str,0) == 0);
-#endif
-}
-
-
-#endif
-
 
 bool patternlist_match(char **patlist,const char *str)
 /* match string against a list of patterns */

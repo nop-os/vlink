@@ -2173,6 +2173,11 @@ void get_text_data_bss(struct GlobalVars *gv,struct LinkedSection **sections)
   static const char *fn = "get_text_data_bss(): ";
   struct LinkedSection *ls;
 
+  for (ls=(struct LinkedSection *)gv->lnksec.first;
+       ls->n.next!=NULL; ls=(struct LinkedSection *)ls->n.next) {
+    printf("section: '%s'\n", ls->name);
+  }
+
   sections[0] = sections[1] = sections[2] = NULL;
   for (ls=(struct LinkedSection *)gv->lnksec.first;
        ls->n.next!=NULL; ls=(struct LinkedSection *)ls->n.next) {

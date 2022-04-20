@@ -36,7 +36,7 @@ typedef unsigned int uint32_t;
 typedef signed long int int64_t;
 typedef unsigned long int uint64_t;
 #elif defined(_MSC_VER) && (_MSC_VER < 1600)
-typedef __int8 int8_t;	            /* prior to VS2010 stdint.h is missing */
+typedef __int8 int8_t;              /* prior to VS2010 stdint.h is missing */
 typedef unsigned __int8 uint8_t;
 typedef __int16 int16_t;
 typedef unsigned __int16 uint16_t;
@@ -65,15 +65,17 @@ typedef int bool;
 #define NULL 0
 #endif
 #define INVALID (~0)
-#define ADDR_NONE (~0)		/* no defined address: 0xffffffff */
+#define ADDR_NONE (~0)    /* no defined address: 0xffffffff */
 
-#define MAXLEN 256		/* maximum length for symbols and buffers */
+#define MAXLEN 256    /* maximum length for symbols and buffers */
 #define FNAMEBUFSIZE 1024       /* buffer size for file names */
 #define MAX_FWALIGN 8192        /* max. alignment, when writing target file */
 
 /* macros */
-#define SECNAMECMP(s1,s2)       ((s1)->hash==(s2)->hash ? \
-                                  strcmp((s1)->name,(s2)->name) : -1)
+#define __SECNAMECMP(s1,s2)       ((s1)->hash==(s2)->hash ? \
+                                    strcmp((s1)->name,(s2)->name) : -1)
+#define SECNAMECMP(s1,s2) (((!strcmp((s1)->name,".rodata")&&!strcmp((s2)->name,".data"))||(!strcmp((s1)->name,".data")&&!strcmp((s2)->name,".rodata")))?0: \
+                            __SECNAMECMP((s1), (s2)))
 #define SECNAMECMPS(s,n)        ((s)->hash==elf_hash(n) ? \
                                   strcmp((s)->name,(n)) : -1)
 #define SECNAMECMPH(s,n,h)      ((s)->hash==(h) ? \
@@ -206,7 +208,7 @@ struct Section {
   unsigned long offset;         /* offset relative to 1st sec. of same type */
   uint8_t *data;                /* the section's contents */
   unsigned long size;           /* the section's size in bytes (+alignment) */
-  unsigned long last_reloc;	/* offset to location behind last reloc/xref */
+  unsigned long last_reloc; /* offset to location behind last reloc/xref */
   struct list relocs;           /* relocations for this section */
   struct list xrefs;            /* external references to unknown symbols */
   struct RelRef *relrefs;       /* all sections which are referenced rel. */
@@ -263,7 +265,7 @@ struct Reloc {                  /* relocation information */
     struct Section *ptr;        /* base addr of this sect. has to be added */
     struct LinkedSection *lnk;  /* base addr of joined sections */
     struct Symbol *symbol;      /* symbol-pointer, if x-ref. was resolved */
-    struct SymbolMask *smask;	/* ORed feat.mask of all xrefs with this name */
+    struct SymbolMask *smask; /* ORed feat.mask of all xrefs with this name */
   } relocsect;
   unsigned long offset;         /* section-offset of relocation */
   lword addend;                 /* add this to relocation value */

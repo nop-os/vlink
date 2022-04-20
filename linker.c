@@ -896,7 +896,7 @@ static void merge_seclist(struct GlobalVars *gv,struct list *seclist)
 {
   struct LinkedSection *ls;
   struct Section *sec,*nextsec;
-
+  
   do {
     bool create_allowed = TRUE;
 
@@ -906,14 +906,16 @@ static void merge_seclist(struct GlobalVars *gv,struct list *seclist)
       ls = get_matching_lnksec(gv,sec,NULL);
 
       if (!ls && create_allowed) {
-        Dprintf("new: %s(%s) -> %s\n",getobjname(sec->obj),
+        printf("new: %s(%s) -> %s\n",getobjname(sec->obj),
                 sec->name,sec->name);
         ls = create_lnksect(gv,sec->name,sec->type,sec->flags,
                             sec->protection,sec->alignment,sec->memattr);
         create_allowed = FALSE;
       }
-      if (ls)
+      if (ls) {
+        printf("use: %s\n", sec->name);
         addtail(&ls->sections,remnode(&sec->n));
+      }
 
       sec = nextsec;
     }

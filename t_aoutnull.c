@@ -15,7 +15,7 @@
 static const char null_exe[] = {
   "SECTIONS\n"
   "{\n"
-  "  . = 0xF8000000;\n"
+  "  . = 0x01000000;\n"
   "  .text :\n"
   "  {\n"
   "    *(.i* i* I*)\n"
